@@ -54,9 +54,9 @@ def _parse_spec_and_check_if_should_skip(
     assert check_spec, "Health check spec should not be empty"
     for check in check_spec.split(","):
         check_split = check.split("=")
-        assert (
-            len(check_split) == 2
-        ), f"Expect spec to be be specified as type=timeout, e.g. single=180, but got {check}"
+        assert len(check_split) == 2, (
+            f"Expect spec to be be specified as type=timeout, e.g. single=180, but got {check}"
+        )
         if check_split[0] == check_type:
             timeout = float(check_split[1])
             break
@@ -120,7 +120,7 @@ def _run_health_check_program(
         error_type = "unknown"
     timestamp = datetime.now().strftime("%m%d%H%M%S")
     fname = (
-        f"{timestamp}-slice-{slice_id_str}-{os.environ["HOSTNAME"]}-{os.environ["NODE_NAME"]}.txt"
+        f"{timestamp}-slice-{slice_id_str}-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
     )
     with fs_open(os.path.join(output_dir, fname), "w") as f:
         f.write(error_type)
@@ -228,7 +228,7 @@ def global_health_check(check_spec: str, *, output_dir: str):
     th.start()
     th.join(timeout=timeout)
     timestamp = datetime.now().strftime("%m%d%H%M%S")
-    fname = f"{timestamp}-global-{os.environ["HOSTNAME"]}-{os.environ["NODE_NAME"]}.txt"
+    fname = f"{timestamp}-global-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
     if th.is_alive():
         # Join timed out.
         logging.error("Multi-slice (global) health check failed due to timeout!")

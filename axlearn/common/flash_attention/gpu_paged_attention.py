@@ -11,6 +11,7 @@ This implementation is ported from
 https://github.com/jax-ml/jax/blob/jax-v0.6.0/jax/experimental/pallas/ops/gpu/paged_attention.py
 
 """
+
 import functools
 import math
 from typing import Optional
@@ -196,24 +197,24 @@ def _paged_attention_unbatched(
     max_k_split = pl.cdiv(total_num_pages, pages_per_compute_block)
     k_splits = min(max_k_split, good_k_split_for_sm_util)
     k_splits = _largest_divisor_leq(pages_per_sequence, k_splits)
-    assert (
-        pages_per_sequence % k_splits == 0
-    ), f"{pages_per_sequence=} must be divisible by {k_splits=}."
+    assert pages_per_sequence % k_splits == 0, (
+        f"{pages_per_sequence=} must be divisible by {k_splits=}."
+    )
 
     pages_per_partition = pages_per_sequence // k_splits
     pages_per_compute_block = min(pages_per_partition, pages_per_compute_block)
 
-    assert (
-        pages_per_partition % pages_per_compute_block == 0
-    ), f"{pages_per_partition=} must be divisible by {pages_per_compute_block=}."
+    assert pages_per_partition % pages_per_compute_block == 0, (
+        f"{pages_per_partition=} must be divisible by {pages_per_compute_block=}."
+    )
 
     page_tables = page_tables.reshape(k_splits, pages_per_partition)
 
     bias_reshaped = None
     if bias is not None:
-        assert (
-            bias.shape[0] == q.shape[0]
-        ), f"Bias's first dim should be num_q_heads {q.shape[0]}, got {bias.shape[0]}"
+        assert bias.shape[0] == q.shape[0], (
+            f"Bias's first dim should be num_q_heads {q.shape[0]}, got {bias.shape[0]}"
+        )
         assert bias.shape[1] == pages_per_sequence * page_size, (
             f"Bias's second dim should be kv_len, "
             f"{pages_per_sequence} * {page_size}, got {bias.shape[1]}"

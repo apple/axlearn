@@ -126,6 +126,7 @@ bs=1,num_heads=4,seq_len=16384,sw_sz=4096         5.914208      0.493888      0.
 bs=1,num_heads=4,seq_len=32768,sw_sz=1024         23.976608     0.308416      0.195104
 bs=1,num_heads=4,seq_len=32768,sw_sz=4096         24.004320     0.942208      0.517792
 """
+
 # pylint: enable=line-too-long
 import itertools
 from typing import Any, Optional, Protocol, Union

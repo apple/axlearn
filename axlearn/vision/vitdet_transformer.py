@@ -11,6 +11,7 @@
 ViTDet References:
 - https://github.com/facebookresearch/detectron2/blob/main/detectron2/modeling/backbone/vit.py
 """
+
 import copy
 import math
 from collections.abc import Sequence

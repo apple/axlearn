@@ -2,6 +2,7 @@
 """This module provides functions to decorate a ForwardFn to allow for a minibatched
 version that enables gradient accumulation.
 """
+
 import functools
 from typing import Any, Callable, Optional
 
@@ -47,8 +48,7 @@ def _compute_minibatch_size(input_batch: Nested[Tensor], *, steps: int) -> int:
     input_batch_size = input_batch_sizes[0]
     if input_batch_size % steps != 0:
         raise ValueError(
-            f"Input batch size {input_batch_size} "
-            f"must be divisible by number of steps: {steps}."
+            f"Input batch size {input_batch_size} must be divisible by number of steps: {steps}."
         )
     return input_batch_size // steps
 

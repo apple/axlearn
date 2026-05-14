@@ -4,6 +4,7 @@
 
 https://arxiv.org/pdf/2109.10086.pdf
 """
+
 from typing import Optional
 
 import jax.numpy as jnp

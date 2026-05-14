@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests trainer launch utilities."""
+
 import copy
 from collections.abc import Sequence
 from typing import Optional

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests blocks for mobile networks."""
+
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
 import jax.random
 import tensorflow as tf

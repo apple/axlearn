@@ -1,5 +1,6 @@
 # pylint: disable=no-self-use,too-many-statements
 """Test for ctc_aligner.py"""
+
 from typing import Dict
 
 import jax

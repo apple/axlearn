@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests for RetinaNet components."""
+
 import jax.random
 import numpy as np
 from absl.testing import absltest, parameterized

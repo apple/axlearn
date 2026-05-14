@@ -19,6 +19,7 @@ The following snippet demonstrates the use of interfaces:
 
 See also: https://github.com/cocodataset/cocoapi/
 """
+
 from typing import Any
 
 import jax

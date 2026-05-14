@@ -4,6 +4,7 @@
 
 Implements activation clipping needed for int8 quantized dot_general.
 """
+
 from typing import Union
 
 from jax import numpy as jnp

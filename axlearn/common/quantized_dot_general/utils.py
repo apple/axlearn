@@ -15,6 +15,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """QuantizedDotGeneral Utilities. Hosts default quantization configuration."""
+
 import functools
 
 import jax

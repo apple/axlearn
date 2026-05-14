@@ -195,8 +195,7 @@ class ManagerClient:
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logging.debug(
-                "RestartReplicaTraining failed: target=%s:%d, replica_id=%d, "
-                "reason='%s', error=%s",
+                "RestartReplicaTraining failed: target=%s:%d, replica_id=%d, reason='%s', error=%s",
                 target_hostname,
                 port,
                 replica_id,

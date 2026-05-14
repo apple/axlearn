@@ -82,12 +82,12 @@ def _check_or_update(golden_file: str, actual: str):
             expected = f.read()
     except FileNotFoundError:
         raise AssertionError(
-            f"Golden file not found: {golden_file}\n" "Run with UPDATE_GOLDEN=1 to generate."
+            f"Golden file not found: {golden_file}\nRun with UPDATE_GOLDEN=1 to generate."
         ) from None
 
     if actual != expected:
         raise AssertionError(
-            f"Golden file mismatch: {golden_file}\n" "Run with UPDATE_GOLDEN=1 to update."
+            f"Golden file mismatch: {golden_file}\nRun with UPDATE_GOLDEN=1 to update."
         )
 
 

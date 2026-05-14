@@ -467,7 +467,8 @@ def compile_inference_programs(
 
     with inferencer.mesh():
         jitted_fn = cast(
-            partial, method_runner._jit_run_on_batch  # pylint: disable=protected-access
+            partial,
+            method_runner._jit_run_on_batch,  # pylint: disable=protected-access
         )
         prng_key = jax.ShapeDtypeStruct(dtype=jnp.uint32, shape=[4])
         input_batch = jax.tree.map(

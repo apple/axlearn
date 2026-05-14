@@ -168,7 +168,7 @@ class LWSHTTPRoute(FlagConfigurable):
                 "namespace": cfg.namespace,  # Use LWS namespace for owner reference to work
                 "ownerReferences": [
                     {
-                        "apiVersion": f'{api_kwargs["group"]}/{api_kwargs["version"]}',
+                        "apiVersion": f"{api_kwargs['group']}/{api_kwargs['version']}",
                         "kind": "LeaderWorkerSet",
                         "name": self.name,
                         "uid": lws["metadata"]["uid"],
@@ -219,7 +219,7 @@ class LWSHTTPRoute(FlagConfigurable):
                             {
                                 "path": {
                                     "type": "PathPrefix",
-                                    "value": f'/serve/{self.name.removesuffix("-long-running")}',
+                                    "value": f"/serve/{self.name.removesuffix('-long-running')}",
                                 }
                             }
                         ],

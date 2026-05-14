@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests utils."""
+
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized

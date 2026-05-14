@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BEiT image tokenizer."""
+
 import jax
 from absl.testing import absltest, parameterized
 

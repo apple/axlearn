@@ -2,7 +2,6 @@
 
 """Tests autoregressive models."""
 
-
 from functools import partial
 from typing import cast
 

@@ -136,7 +136,8 @@ class BatchTest(TestCase):
                 break
             self.assertNestedAllClose(as_tensor(expected_batches[batch_index]), batch)
         self.assertEqual(
-            batch_index, len(expected_batches)  # pylint: disable=undefined-loop-variable
+            batch_index,
+            len(expected_batches),  # pylint: disable=undefined-loop-variable
         )
 
         dataset = cfg.instantiate(parent=None)
@@ -145,7 +146,8 @@ class BatchTest(TestCase):
                 break
             self.assertNestedAllClose(as_tensor(expected_batches[batch_index]), batch)
         self.assertEqual(
-            batch_index, len(expected_batches)  # pylint: disable=undefined-loop-variable
+            batch_index,
+            len(expected_batches),  # pylint: disable=undefined-loop-variable
         )
 
 

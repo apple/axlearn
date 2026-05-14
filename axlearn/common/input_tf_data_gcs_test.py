@@ -117,9 +117,9 @@ class TfdsGcsTest(parameterized.TestCase):
         ds = source.instantiate()
 
         for input_batch in ds().take(5):
-            assert expected in input_batch[field_name].numpy().decode(
-                "UTF-8"
-            ), f"Missing {expected} string in {field_name} field"
+            assert expected in input_batch[field_name].numpy().decode("UTF-8"), (
+                f"Missing {expected} string in {field_name} field"
+            )
 
 
 if __name__ == "__main__":

@@ -524,8 +524,7 @@ class Decoder(BaseLayer):
         # Validate logits_forward_dtype
         if cfg.logits_forward_dtype not in [None, jnp.float32]:
             raise ValueError(
-                f"logits_forward_dtype must be None or jnp.float32, "
-                f"got {cfg.logits_forward_dtype}"
+                f"logits_forward_dtype must be None or jnp.float32, got {cfg.logits_forward_dtype}"
             )
 
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)

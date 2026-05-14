@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """RCNN losses."""
+
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer

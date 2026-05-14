@@ -9,6 +9,7 @@
 Reference:
 https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/vision/dataloaders/retinanet_input.py
 """
+
 from typing import Any, Literal, Optional
 
 import numpy as np

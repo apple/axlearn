@@ -48,6 +48,7 @@ In pseudo code:
           carry, ys[i, ...] = fn(carry, xs[i, ...])
       return carry, ys
 """
+
 import dataclasses
 from typing import Callable, NamedTuple, Optional, Sequence, Union
 

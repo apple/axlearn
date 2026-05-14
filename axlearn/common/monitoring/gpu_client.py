@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """Client for fetching GPU metrics via NVML."""
+
 import atexit
 
 from absl import logging

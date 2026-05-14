@@ -92,9 +92,9 @@ def in_modal_reg_from_similarity(similarity: Tensor) -> Tensor:
     Returns:
         A float Tensor represents the cross-modal loss.
     """
-    assert (
-        len(similarity.shape) == 2 and similarity.shape[0] == similarity.shape[1]
-    ), f"similarity must be a 2-D square matrix, but got similarity.shape={similarity.shape}"
+    assert len(similarity.shape) == 2 and similarity.shape[0] == similarity.shape[1], (
+        f"similarity must be a 2-D square matrix, but got similarity.shape={similarity.shape}"
+    )
     similarity_t = similarity.T
     return mean_squared_error(similarity, similarity_t).mean
 
@@ -112,9 +112,9 @@ def cross_modal_reg(x: Tensor, y: Tensor) -> Tensor:
     Returns:
         A float Tensor represents the cross-modal loss.
     """
-    assert (
-        x.shape == y.shape
-    ), f"x, y must have same shape but got x.shape={x.shape}, y.shape={y.shape}"
+    assert x.shape == y.shape, (
+        f"x, y must have same shape but got x.shape={x.shape}, y.shape={y.shape}"
+    )
     sim1 = contrastive_logits(x, x)
     sim2 = contrastive_logits(y, y)
     return mean_squared_error(sim1, sim2).mean

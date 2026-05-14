@@ -1,5 +1,6 @@
 # Copyright © 2024 Amazon Inc.
 """Flash attention Kernels using NKI on Neuron. Tested on trn1 & trn2."""
+
 from functools import partial
 from typing import Optional
 
@@ -174,9 +175,9 @@ def _mha_backward(
         grid = batch_size, num_heads
 
     if bias is not None:
-        assert (
-            bias.ndim == 4
-        ), f"Neuron flash_attention is only expecting bias.ndim = 4 but got {bias.ndim}"
+        assert bias.ndim == 4, (
+            f"Neuron flash_attention is only expecting bias.ndim = 4 but got {bias.ndim}"
+        )
         assert bias.shape[0] == 1 and bias.shape[1] == 1, (
             f"Bias is only supported when batch and num_heads are both 1, "
             f"batch is {bias.shape[0]} and num_heads is {bias.shape[1]}"

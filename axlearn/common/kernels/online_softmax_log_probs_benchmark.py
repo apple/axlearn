@@ -167,12 +167,8 @@ def main(_):
     baseline_top1_tps = results[1][3]
     pallas_topk_tps = results[2][3]
     pallas_top1_tps = results[3][3]
-    print(
-        f"Pallas topk vs Baseline topk: " f"{pallas_topk_tps / baseline_topk_tps:.2f}x throughput"
-    )
-    print(
-        f"Pallas top1 vs Baseline top1: " f"{pallas_top1_tps / baseline_top1_tps:.2f}x throughput"
-    )
+    print(f"Pallas topk vs Baseline topk: {pallas_topk_tps / baseline_topk_tps:.2f}x throughput")
+    print(f"Pallas top1 vs Baseline top1: {pallas_top1_tps / baseline_top1_tps:.2f}x throughput")
 
     if PALLAS_INTERPRET:
         print(

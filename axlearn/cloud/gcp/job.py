@@ -257,7 +257,7 @@ class GKEJob(GCPJob):
         cfg: GKEJob.Config = self.config
         api_kwargs = custom_jobset_kwargs()
         custom_object = dict(
-            apiVersion=f"{api_kwargs["group"]}/{api_kwargs["version"]}",
+            apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
             kind="JobSet",
             **self._build_jobset(),
         )
@@ -606,7 +606,7 @@ class GKELeaderWorkerSet(GCPJob):
 
         api_kwargs = custom_leaderworkerset_kwargs()
         custom_object = dict(
-            apiVersion=f"{api_kwargs["group"]}/{api_kwargs["version"]}",
+            apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
             kind="LeaderWorkerSet",
             **self._build_leaderworkerset(),
         )

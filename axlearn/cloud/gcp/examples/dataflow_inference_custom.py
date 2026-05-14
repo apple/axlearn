@@ -47,7 +47,6 @@ $ axlearn gcp dataflow start \
 
 """
 
-
 import copy
 import logging
 from collections.abc import Sequence

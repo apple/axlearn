@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests RPN sampler."""
+
 import jax
 import numpy as np
 from absl.testing import absltest

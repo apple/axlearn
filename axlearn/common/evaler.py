@@ -687,9 +687,9 @@ class SpmdEvaler(Module):
             logging.log_first_n(logging.INFO, "Evaler input_batch=%s", 3, utils.shapes(input_batch))
 
             if batch_ix == stop_trace_iter:
-                assert (
-                    forward_outputs is not None
-                ), "output was None at the end of a trace, not expected."
+                assert forward_outputs is not None, (
+                    "output was None at the end of a trace, not expected."
+                )
                 jax.tree.map(lambda x: x.block_until_ready(), forward_outputs)
                 jax.profiler.stop_trace()
                 self.vlog(2, "Stopped profiler tracing for evaler %s.", cfg.name)

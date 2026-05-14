@@ -7,6 +7,7 @@
 # Licensed under BSD 3 clause.
 
 """Retrieval metrics."""
+
 from typing import Optional
 
 import jax
@@ -74,9 +75,9 @@ def top_k_accuracy(
         similarity_bias = jnp.zeros(sim.shape[1], dtype=sim.dtype)
     if similarity_bias.shape != sim.shape:
         similarity_bias = similarity_bias.reshape(1, -1)
-    assert (
-        similarity_bias.shape[1] == sim.shape[1]
-    ), f"similarity_bias.shape={similarity_bias.shape}, but sim.shape={sim.shape}"
+    assert similarity_bias.shape[1] == sim.shape[1], (
+        f"similarity_bias.shape={similarity_bias.shape}, but sim.shape={sim.shape}"
+    )
     sim = sim + similarity_bias
 
     if gt_targets is None and relevance_labels is None:

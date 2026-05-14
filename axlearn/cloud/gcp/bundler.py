@@ -55,10 +55,15 @@ from typing import List, Optional
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, BaseTarBundler, Bundler, DockerBundler
+from axlearn.cloud.common.bundler import (
+    BaseDockerBundler,
+    BaseTarBundler,
+    Bundler,
+    DockerBundler,
+    register_bundler,
+)
 from axlearn.cloud.common.bundler import main as bundler_main
 from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
-from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list, parse_kv_flags, to_bool
 from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build

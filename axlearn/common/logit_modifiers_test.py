@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests logit modifiers."""
+
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized

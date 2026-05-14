@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests vision transformer layers."""
+
 # pylint: disable=no-member,no-self-use
 import jax
 import jax.numpy as jnp
@@ -143,9 +144,7 @@ class ModelTest(TestCase):
         self.assertEqual((batch_size, 196, 8), outputs["patch_features"].shape)
 
     def test_model_with_output_proj(self):
-        model_cfg = named_model_configs(extra_settings=dict(output_proj_dim=32))[
-            "Test16"
-        ]  # type: VisionTransformer.Config
+        model_cfg = named_model_configs(extra_settings=dict(output_proj_dim=32))["Test16"]  # type: VisionTransformer.Config
         model = model_cfg.set(name="test").instantiate(parent=None)
         state = model.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         predictions, _ = F(

@@ -4,6 +4,7 @@
 
 https://arxiv.org/abs/1804.07461
 """
+
 from typing import Optional, Union
 
 import jax

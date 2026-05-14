@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Normalization utils."""
+
 import jax
 
 from axlearn.common.utils import Tensor

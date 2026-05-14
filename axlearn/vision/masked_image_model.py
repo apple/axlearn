@@ -12,6 +12,7 @@ References:
 - Fang, Y., Wang, W., Xie, B., Sun, Q., Wu, L., Wang, X., & Cao, Y.  (2022). Eva: Exploring the
 limits of masked visual representation learning at scale. https://arxiv.org/abs/2211.07636
 """
+
 from typing import Callable
 
 from jax import numpy as jnp

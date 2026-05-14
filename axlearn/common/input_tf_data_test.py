@@ -290,9 +290,9 @@ class TfdsTest(parameterized.TestCase):
 
         decoders = config_for_function(tfds_custom_decoder)
         custom_decoders = decoders.instantiate()
-        assert isinstance(
-            custom_decoders[field_name], tfds.decode.base.DecoderFn
-        ), "The decoder fn is not of type tfds.decode.base.DecoderFn"
+        assert isinstance(custom_decoders[field_name], tfds.decode.base.DecoderFn), (
+            "The decoder fn is not of type tfds.decode.base.DecoderFn"
+        )
 
 
 def _text_ds(texts: list[str], *, repeat=1) -> tf.data.Dataset:

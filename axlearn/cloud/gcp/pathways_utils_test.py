@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """Tests Pathways utilities."""
+
 import contextlib
 
 from absl import flags
@@ -531,7 +532,9 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
         num_replicas=[1, 2], user_command_patcher=[None, MockUserCommandPatcher.default_config()]
     )
     def test_replicated_job(self, num_replicas, user_command_patcher):
-        with (self._job_config(CloudBuildBundler, num_replicas) as (cfg, bundler_cfg),):
+        with (
+            self._job_config(CloudBuildBundler, num_replicas) as (cfg, bundler_cfg),
+        ):
             command = "test_command"
             if user_command_patcher:
                 cfg.set(user_command_patcher=user_command_patcher)

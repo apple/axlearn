@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests window attention."""
+
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods,invalid-name
 import jax.random
 from absl.testing import absltest, parameterized

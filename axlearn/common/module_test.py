@@ -27,15 +27,13 @@ from axlearn.common.module import (
     child_context,
     clone_context_stack,
     current_context,
-)
-from axlearn.common.module import functional as F
-from axlearn.common.module import (
     install_context_stack,
     new_output_collection,
     nowrap,
     scan_in_context,
     set_current_context,
 )
+from axlearn.common.module import functional as F
 from axlearn.common.summary import ImageSummary, Summary
 from axlearn.common.test_utils import TestWithTemporaryCWD
 from axlearn.common.utils import Nested, match_regex_rules

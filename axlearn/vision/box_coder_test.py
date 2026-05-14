@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests box coder implementations."""
+
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized

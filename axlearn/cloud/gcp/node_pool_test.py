@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests node_pool module."""
+
 from functools import partial
 from typing import Optional
 from unittest import mock

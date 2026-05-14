@@ -15,6 +15,7 @@ factorization, specifically:
      parameters of Repeat and Pipeline layers.
    - weight_decay_scale: control the weight decay rate.
 """
+
 import dataclasses
 from typing import Any, Callable, NamedTuple, Optional, Union
 

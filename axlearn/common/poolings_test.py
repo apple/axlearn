@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests pooling layers."""
+
 # pylint: disable=no-self-use
 import itertools
 

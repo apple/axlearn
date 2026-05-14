@@ -68,7 +68,6 @@ class PagedKVStorageProtocolTest(TestCase):
 
 
 class Bf16PagedStorageMethodsTest(TestCase):
-
     def test_kernel_inputs_keys_and_tensors(self):
         storage = _make_bf16_storage()
         mha = {
@@ -116,7 +115,6 @@ class Bf16PagedStorageMethodsTest(TestCase):
 
 
 class RegisterBf16KernelTest(TestCase):
-
     def setUp(self):
         super().setUp()
         self._snapshot = dict(_BF16_KERNEL_REGISTRY)

@@ -2314,9 +2314,9 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         if cfg.interpret:
-            assert (
-                cfg.preferred_element_type is not None
-            ), "When interpret == True, please set preferred_element_type explicitly"
+            assert cfg.preferred_element_type is not None, (
+                "When interpret == True, please set preferred_element_type explicitly"
+            )
 
     def _padded_gmm(self, lhs, rhs, tokens_per_expert):
         cfg = self.config

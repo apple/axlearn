@@ -5,6 +5,7 @@ References on feature map:
     - The Hedgehog & the Porcupine: Expressive Linear Attentions with
 Softmax Mimicry (https://arxiv.org/pdf/2402.04347)
 """
+
 import enum
 import functools
 from typing import Callable, NamedTuple

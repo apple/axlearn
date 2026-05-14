@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """Tests LinearAttention Pallas kernels."""
+
 import jax
 import jax.numpy as jnp
 import pytest

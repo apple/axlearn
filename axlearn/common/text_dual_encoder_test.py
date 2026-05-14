@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dual-encoder modules."""
+
 # pylint: disable=no-self-use
 from typing import Optional
 

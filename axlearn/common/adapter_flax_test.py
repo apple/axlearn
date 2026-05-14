@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests adapter flax layers."""
+
 from typing import Callable
 
 import jax.random

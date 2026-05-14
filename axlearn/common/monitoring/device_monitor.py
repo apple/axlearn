@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Device monitor module, to collect and report system metrics."""
+
 import contextlib
 import threading
 from typing import Literal

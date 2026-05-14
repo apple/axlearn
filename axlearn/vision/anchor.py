@@ -10,6 +10,7 @@
 
 Reference: https://github.com/tensorflow/models/blob/master/official/vision/ops/anchor.py.
 """
+
 import itertools
 from dataclasses import dataclass
 

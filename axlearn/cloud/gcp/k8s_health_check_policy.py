@@ -152,7 +152,7 @@ class LWSHealthCheckPolicy(FlagConfigurable):
                 "namespace": cfg.namespace,
                 "ownerReferences": [
                     {
-                        "apiVersion": f'{api_kwargs["group"]}/{api_kwargs["version"]}',
+                        "apiVersion": f"{api_kwargs['group']}/{api_kwargs['version']}",
                         "kind": "LeaderWorkerSet",
                         "name": self.name,
                         "uid": lws["metadata"]["uid"],

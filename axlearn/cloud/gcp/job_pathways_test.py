@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """Unit tests of job_pathways.py."""
+
 from typing import Optional, cast
 
 from absl import flags

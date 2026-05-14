@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests NMS utils."""
+
 import jax.numpy as jnp
 import tensorflow as tf
 from absl.testing import absltest, parameterized

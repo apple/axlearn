@@ -29,7 +29,7 @@ class VmUtilsTest(parameterized.TestCase):
         ]
         # List without metadata.
         self.assertEqual(
-            ("\n" "NAME       \n" "test1      \n" "test2      " "\n"),
+            ("\nNAME       \ntest1      \ntest2      \n"),
             format_vm_info(vms, metadata=None),
         )
         # List with metadata.

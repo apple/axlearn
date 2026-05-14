@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests retrieval evaluation pipeline."""
+
 # pylint: disable=no-self-use
 import tempfile
 from typing import Union

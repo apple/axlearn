@@ -22,6 +22,7 @@ Implementation adapted from:
 https://github.com/rwightman/efficientnet-jax/
 https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/efficientnet.py
 """
+
 import contextlib
 import enum
 import math
@@ -358,7 +359,7 @@ class MobileNets(BaseModel):
             for block_idx, (block_type, block_args) in enumerate(stage_defs):
                 # Check and adjust stride.
                 if block_args["stride"] not in (1, 2):
-                    raise ValueError(f'Invalid value for stride: {block_args["stride"]}.')
+                    raise ValueError(f"Invalid value for stride: {block_args['stride']}.")
                 # Only the first block in any stack can have a stride > 1.
                 if block_idx >= 1:
                     block_args["stride"] = 1

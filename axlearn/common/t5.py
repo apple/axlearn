@@ -12,6 +12,7 @@ Differences:
 - attend_dtype is not supported:
 https://github.com/google-research/t5x/blob/03dfc44be7f9a93d34c1d7fd6f896d1c364a7d4d/t5x/examples/t5/layers.py#L518-L519
 """
+
 import math
 from typing import Optional, Union
 

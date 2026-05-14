@@ -333,7 +333,7 @@ class SummaryWriter(BaseWriter):
                     return
 
                 logging.warning(
-                    "SummaryWriter: Does not know how to " 'log "%s" (%s).',
+                    'SummaryWriter: Does not know how to log "%s" (%s).',
                     path,
                     raw_value.__class__,
                 )
@@ -431,8 +431,7 @@ class WandBWriter(BaseWriter):
     def __init__(self, cfg: SummaryWriter.Config, *, parent: Optional[Module]):
         if wandb is None:
             raise ModuleNotFoundError(
-                "To use the Weights & Biases logger, please install wandb "
-                "with `pip install wandb`."
+                "To use the Weights & Biases logger, please install wandb with `pip install wandb`."
             )
         super().__init__(cfg, parent=parent)
 
@@ -568,7 +567,7 @@ class WandBWriter(BaseWriter):
                 return
 
             logging.warning(
-                "WandBWriter: Does not know how to " 'log "%s" (%s).', path, raw_value.__class__
+                'WandBWriter: Does not know how to log "%s" (%s).', path, raw_value.__class__
             )
 
         def is_leaf(x):

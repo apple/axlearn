@@ -11,6 +11,7 @@
 Code reference:
 https://github.com/tensorflow/models/blob/master/official/vision/ops/preprocess_ops.py
 """
+
 # pylint: disable=too-many-lines
 import enum
 import math

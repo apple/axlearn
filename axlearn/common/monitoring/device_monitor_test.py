@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Test class for device_mon.py."""
+
 import time
 
 from absl.testing import absltest, parameterized

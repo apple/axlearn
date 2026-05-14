@@ -11,6 +11,7 @@
 References:
 https://github.com/tensorflow/lingvo/blob/7dcd8e0b5704b19b3197674c856ac7a0ae3f965f/lingvo/core/rnn_cell.py
 """
+
 from collections.abc import Sequence
 from typing import Optional
 

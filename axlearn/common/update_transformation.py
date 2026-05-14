@@ -12,6 +12,7 @@ legacy `PartitionedGradientTransformation` to an `UpdateTransformation`.
 Despite the `UpdateTransformation` interface being preferred for new optimizers, there
 are no plans to stop supporting `PartitionedGradientTransformation`.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -90,7 +91,9 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
                 f"Transformation must be a PartitionedGradientTransformation: {cfg.transformation}."
             )
 
-    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Union[
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Union[
         Nested[PartitionSpec],
         tuple[Nested[PartitionSpec]],
     ]:
@@ -409,7 +412,9 @@ class OverrideInplaceUpdateTransformation(WrappedPartitionedGradientTransformati
         """Given a pytree of params, keeps only the passthrough params."""
         return mask_tree(params, keep=self._is_passthrough(params), mask_value=optax.MaskedNode())
 
-    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Union[
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Union[
         Nested[PartitionSpec],
         tuple[Nested[PartitionSpec]],
     ]:

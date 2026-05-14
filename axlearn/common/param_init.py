@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Modules for configurable parameter initialization."""
+
 import re
 from collections.abc import Sequence
 from enum import Enum

@@ -9,16 +9,9 @@ repos:
     # These files are generated.
     exclude: "axlearn/experiments/testdata/.*"
   - id: trailing-whitespace
-- repo: https://github.com/psf/black
-  rev: 25.11.0
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.12
   hooks:
-  - id: black
-- repo: https://github.com/pycqa/isort
-  rev: 5.13.2
-  hooks:
-  - id: isort
-- repo: https://github.com/pylint-dev/pylint
-  rev: v4.0.3
-  hooks:
-  - id: pylint
-    args: ['--msg-template="{abspath}:{line}: [{msg_id}({symbol}), {obj}] {msg}"']
+  - id: ruff-check
+    args: [--fix]
+  - id: ruff-format

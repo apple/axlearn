@@ -356,7 +356,7 @@ def _build_base_pathways_worker_container(
             # The flag below is needed for better H2D performance.
             # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
             # Note that pathways worker requires this flag to be a power of 2.
-            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
+            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory // 4) * (1 << 30)}",
         )
     else:
         # Colocated python uses more host memory.
@@ -364,7 +364,7 @@ def _build_base_pathways_worker_container(
         premapped_buffer_size_gb = min(round_up_to_power_of_2(host_memory // 16), 32)
         args.extend(
             [
-                f"--tpu_premapped_buffer_size={premapped_buffer_size_gb * (1<<30)}",
+                f"--tpu_premapped_buffer_size={premapped_buffer_size_gb * (1 << 30)}",
                 f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}",
             ]
         )

@@ -38,6 +38,7 @@ No sparsity:
 With sparsity such as with sliding window attention, FlashDecoding is few times faster. The
 performance gain is proportional to total context length divided by window size.
 """
+
 from __future__ import annotations
 
 import functools

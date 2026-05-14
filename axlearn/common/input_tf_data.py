@@ -511,8 +511,7 @@ def sample_from_datasets(
                 options.autotune.enabled = True
                 options.autotune.ram_budget = int(
                     # Soft constrain to this many bytes of memory per component.
-                    (autotune_ram_budget_gb / len(source_ds_list))
-                    * 1024**3
+                    (autotune_ram_budget_gb / len(source_ds_list)) * 1024**3
                 )
                 # Start fetching data on iterator creation.
                 options.experimental_warm_start = True

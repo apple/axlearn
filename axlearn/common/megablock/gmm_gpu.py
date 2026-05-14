@@ -75,7 +75,7 @@ def _validate_args(
     # Validate 'rhs'.
     if rhs.ndim != expected_rhs_dims:
         raise ValueError(
-            f"Expected {expected_rhs_dims}-tensor for 'rhs' but got" f" {rhs.ndim}-tensor."
+            f"Expected {expected_rhs_dims}-tensor for 'rhs' but got {rhs.ndim}-tensor."
         )
     _assert_is_supported_dtype(rhs.dtype)
 
@@ -530,9 +530,9 @@ def gmm(
             in_specs=[
                 pl.BlockSpec((m, k), lambda tile_m_i, n_i: (0, 0)),
                 pl.BlockSpec((len(group_offsets) - 1, k, tn), lambda tile_m_i, n_i: (0, 0, n_i)),
-                pl.BlockSpec((len(g_offsets),), lambda tile_m_i, n_i: (0)),
-                pl.BlockSpec((len(g_ids),), lambda tile_m_i, n_i: (0)),
-                pl.BlockSpec((len(m_t_ids),), lambda tile_m_i, n_i: (0)),
+                pl.BlockSpec((len(g_offsets),), lambda tile_m_i, n_i: 0),
+                pl.BlockSpec((len(g_ids),), lambda tile_m_i, n_i: 0),
+                pl.BlockSpec((len(m_t_ids),), lambda tile_m_i, n_i: 0),
             ],
             out_specs=pl.BlockSpec((m, tn), lambda tile_m_i, n_i: (0, n_i)),
             grid=(len(group_ids), tiles_n),
@@ -708,9 +708,9 @@ def tgmm(
             in_specs=[
                 pl.BlockSpec((tk, m), lambda _, k_i, n_i: (k_i, 0)),
                 pl.BlockSpec((m, tn), lambda _, k_i, n_i: (0, n_i)),
-                pl.BlockSpec((len(g_offsets),), lambda _, k_i, n_i: (0)),
-                pl.BlockSpec((len(m_t_ids),), lambda _, k_i, n_i: (0)),
-                pl.BlockSpec((len(g_changing_idx),), lambda _, k_i, n_i: (0)),
+                pl.BlockSpec((len(g_offsets),), lambda _, k_i, n_i: 0),
+                pl.BlockSpec((len(m_t_ids),), lambda _, k_i, n_i: 0),
+                pl.BlockSpec((len(g_changing_idx),), lambda _, k_i, n_i: 0),
             ],
             out_specs=pl.BlockSpec(
                 (num_actual_groups, tk, tn), lambda g_idx, k_i, n_i: (0, k_i, n_i)
