@@ -602,7 +602,7 @@ class BoolTensorAttentionBias(BoolAttentionBias):
     def __post_init__(self):
         if getattr(self._internal_bool_value, "ndim", 4) != 4:
             raise ValueError(f"Invalid shape {self._internal_bool_value.shape}.")
-        if getattr(self._internal_bool_value, "dtype", bool) != bool:
+        if getattr(self._internal_bool_value, "dtype", bool) != bool:  # noqa: E721  # dtype equality
             raise ValueError(f"Invalid dtype {self._internal_bool_value.dtype}, expected bool.")
 
     def _bool_value(self) -> Tensor:

@@ -179,7 +179,7 @@ class RequiredFieldValue:
     def __contains__(self, item: Any) -> bool:
         self._raise("check membership of")
 
-    def __len__(self) -> int:  # pylint: disable=invalid-length-returned
+    def __len__(self) -> int:  # noqa: PLE0303  # always raises
         self._raise("get length of")
 
     # Callable.
