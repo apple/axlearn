@@ -1034,7 +1034,7 @@ class Bastion(Configurable):
         try:
             # By default tf_nest does not check types of atoms/leaves.
             def check_leaves(x, y):
-                assert type(x) == type(y)  # pylint: disable=unidiomatic-typecheck
+                assert type(x) == type(y)  # noqa: E721  # exact-type check, not isinstance
 
             tf_nest.map_structure(check_leaves, options, defaults)
         except (TypeError, ValueError, AssertionError) as e:

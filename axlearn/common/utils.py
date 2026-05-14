@@ -1946,7 +1946,7 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     if flat is None:
         return []
 
-    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
+    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):  # noqa: E721
         # Handle namedtuple as a special case, based on heuristic.
         return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
 

@@ -289,8 +289,8 @@ def annotate_stack(**aux) -> Callable:
     def decorator(fn: Callable) -> Callable:
         @functools.wraps(fn)
         def stack_annotation_wrapper(*args, **kwargs):
-            # pylint: disable=unused-variable
-            aux_ = aux
+            # Retrieved via `frame.f_locals["aux_"]` by `_walk_stack` below.
+            aux_ = aux  # noqa: F841
             return fn(*args, **kwargs)
 
         return stack_annotation_wrapper

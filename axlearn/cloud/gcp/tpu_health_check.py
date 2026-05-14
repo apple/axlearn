@@ -115,7 +115,7 @@ def _run_health_check_program(
     except subprocess.CalledProcessError:
         logging.error("Slice %s health check failed due to program error.", slice_id_str)
         error_type = "program error"
-    except:  # pylint: disable=bare-except
+    except Exception:
         logging.error("Slice %s health check failed due to unknown error.", slice_id_str)
         error_type = "unknown"
     timestamp = datetime.now().strftime("%m%d%H%M%S")
