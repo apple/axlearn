@@ -38,7 +38,6 @@ from axlearn.common.config import (
     UnknownFieldError,
     config_class,
 )
-from axlearn.common.convolution import Conv2D
 from axlearn.common.loss import binary_cross_entropy, categorical_hinge_loss, cross_entropy
 from axlearn.common.metrics import WeightedSummary
 from axlearn.common.metrics_classification import precision_recall_f_score
