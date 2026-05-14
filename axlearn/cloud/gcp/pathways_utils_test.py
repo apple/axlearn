@@ -257,6 +257,53 @@ class PathwaysReplicatedJobTest(TestCase):
             for flag in mxla_arg_flags:
                 self.assertIn(flag, worker_container["args"])
 
+    def test_health_probes_not_applied_to_worker_container(self):
+        """Health probes must only apply to the head container in JobSets."""
+        with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            )
+            # Configure probes on the inner builder (simulates what
+            # PathwaysLeaderWorkerTemplate does via enable_health_probes).
+            cfg.inner.startup_probe = cfg.inner.startup_probe.set(
+                http_port=8080, http_path="/v1/health"
+            )
+            cfg.inner.readiness_probe = cfg.inner.readiness_probe.set(
+                http_port=8080, http_path="/v1/health"
+            )
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # Head container must have probes.
+            # pylint: disable-next=protected-access
+            head_pod = builder._build_pathways_head_pod()
+            head_container = head_pod["spec"]["containers"][0]
+            self.assertIn("startupProbe", head_container)
+            self.assertIn("readinessProbe", head_container)
+
+            # Worker container must NOT carry any health probes.
+            # pylint: disable-next=protected-access
+            worker_pod = builder._build_pathways_worker_pod()
+            worker_container = worker_pod["spec"]["containers"][0]
+            self.assertNotIn(
+                "startupProbe",
+                worker_container,
+                "startupProbe must not be present on pathways worker containers",
+            )
+            self.assertNotIn(
+                "readinessProbe",
+                worker_container,
+                "readinessProbe must not be present on pathways worker containers",
+            )
+            self.assertNotIn(
+                "livenessProbe",
+                worker_container,
+                "livenessProbe must not be present on pathways worker containers",
+            )
+
     def test_pod_mutators_propagate_to_worker_pod(self):
         """Tests that pod_mutators set on PathwaysReplicatedJob propagate to worker pods."""
 
@@ -781,6 +828,50 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             # Verify no health probes are present
             self.assertNotIn("startupProbe", container)
             self.assertNotIn("readinessProbe", container)
+
+    def test_health_probes_not_applied_to_worker_container(self):
+        """Health probes must only apply to the head container."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_health_probes=True,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # Head container must have the probes.
+            # pylint: disable-next=protected-access
+            head_container = builder._build_head_container()
+            self.assertIn("startupProbe", head_container)
+            self.assertIn("readinessProbe", head_container)
+
+            # Worker container must NOT carry any health probes.
+            worker_pod = builder.build_worker_pod()
+            worker_containers = worker_pod["spec"]["containers"]
+            self.assertLen(worker_containers, 1)
+            worker_container = worker_containers[0]
+            self.assertNotIn(
+                "startupProbe",
+                worker_container,
+                "startupProbe must not be present on pathways worker containers",
+            )
+            self.assertNotIn(
+                "readinessProbe",
+                worker_container,
+                "readinessProbe must not be present on pathways worker containers",
+            )
+            self.assertNotIn(
+                "livenessProbe",
+                worker_container,
+                "livenessProbe must not be present on pathways worker containers",
+            )
 
     @parameterized.parameters([True, False])
     def test_gke_gateway_route_notary_containers(self, gke_gateway_route):
