@@ -11,10 +11,7 @@ filegroup(
 
 py_library(
     name = "testdata",
-    srcs = glob(
-        ["**/*.py"],
-        exclude = ["generate_parity_goldens/**"],
-    ),
+    srcs = glob(["**/*.py"]),
     visibility = ["//visibility:public"],
     deps = ["//axlearn/common:measurement"],
 )

@@ -864,7 +864,7 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
         assert_allclose(
-            ref_outputs["x"].detach().numpy(),
+            ref_outputs["x"],
             jnp.reshape(
                 outputs.quantized_vectors, [batch_size, seq_len, num_groups * codebook_dim]
             ),
@@ -872,7 +872,7 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
         assert_allclose(
-            ref_outputs["targets"].detach().numpy(),
+            ref_outputs["targets"],
             outputs.ids * safe_not(paddings)[:, :, None],
             atol=1e-6,
             rtol=1e-6,

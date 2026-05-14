@@ -341,8 +341,6 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_tensor(self):
-        torch = pytest.importorskip("torch")
-
         # From a number.
         self.assertTensorEqual(jnp.ones([], dtype=jnp.int32), as_tensor(1))
         # From a numpy array.
@@ -354,11 +352,6 @@ class TreeUtilsTest(TestCase):
             jnp.ones([3], dtype=jnp.bfloat16),
             as_tensor(tf.ones([3], dtype=tf.bfloat16)),
         )
-        # From a Torch tensor.
-        self.assertTensorEqual(
-            jnp.ones([4, 1], dtype=jnp.float16),
-            as_tensor(torch.ones([4, 1], dtype=torch.float16)),
-        )
         # From a nested structure.
         jax.tree.map(
             self.assertTensorEqual,
@@ -369,7 +362,7 @@ class TreeUtilsTest(TestCase):
             as_tensor(
                 {
                     "a": np.ones([1], dtype=np.float32),
-                    "b": [torch.as_tensor([2]), {"c": tf.convert_to_tensor([[4]])}],
+                    "b": [np.asarray([2]), {"c": tf.convert_to_tensor([[4]])}],
                 }
             ),
         )
@@ -444,8 +437,6 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_numpy_array(self):
-        torch = pytest.importorskip("torch")
-
         # From a number.
         self.assertNumpyArrayEqual(np.ones([], dtype=np.int64), as_numpy_array(1))
         # From a numpy array.
@@ -457,11 +448,6 @@ class TreeUtilsTest(TestCase):
             np.ones([3], dtype=np.float16),
             as_numpy_array(tf.ones([3], dtype=tf.float16)),
         )
-        # From a Torch tensor.
-        self.assertNumpyArrayEqual(
-            np.ones([4, 1], dtype=np.float32),
-            as_numpy_array(torch.ones([4, 1], dtype=torch.float)),
-        )
         # From a nested structure.
         jax.tree.map(
             self.assertNumpyArrayEqual,
@@ -472,7 +458,7 @@ class TreeUtilsTest(TestCase):
             as_numpy_array(
                 {
                     "a": jnp.ones([1], dtype=jnp.float32),
-                    "b": [torch.as_tensor([2]), {"c": tf.convert_to_tensor([[4]])}],
+                    "b": [np.asarray([2]), {"c": tf.convert_to_tensor([[4]])}],
                 }
             ),
         )
