@@ -705,6 +705,7 @@ def download_job_batch(
                 if validator:
                     validator.validate(spec)
             except ValidationError as e:
+                logging.info("Job %s failed validation: %s", job_name, e)
                 invalid_jobspecs[job_name] = str(e)
             except Exception as e:  # pylint: disable=broad-except
                 # TODO(markblee): Distinguish transient vs non-transient errors.
