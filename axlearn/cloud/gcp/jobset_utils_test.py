@@ -39,6 +39,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     EphemeralDiskMount,
     GCSFuseMount,
     HostMount,
+    JobDependency,
     TPUReplicatedJob,
     _LoadBalancer,
 )
@@ -1005,6 +1006,69 @@ class TopologyAssignmentTest(TestCase):
             annotations = composite.get_workload_annotations()
             # Both children contribute; annotations will be merged (last wins for same key)
             self.assertIn("tpu-provisioner.cloud.google.com/slice-selection", annotations)
+
+
+class JobDependencyTest(TestCase):
+    """Tests JobDependency and its integration with replicated job __call__ output."""
+
+    def test_build_depends_on_default_status(self):
+        dep = JobDependency.default_config().set(job_name="leader").instantiate()
+        self.assertEqual(dep.build_depends_on(), {"name": "leader", "status": "Complete"})
+
+    def test_build_depends_on_explicit_status(self):
+        dep = JobDependency.default_config().set(job_name="leader", status="Complete").instantiate()
+        self.assertEqual(dep.build_depends_on(), {"name": "leader", "status": "Complete"})
+
+    def test_build_depends_on_running_status(self):
+        dep = JobDependency.default_config().set(job_name="leader", status="Running").instantiate()
+        self.assertEqual(dep.build_depends_on(), {"name": "leader", "status": "Running"})
+
+    def test_invalid_status_raises(self):
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            JobDependency.default_config().set(job_name="leader", status="Ready").instantiate()
+
+    @contextlib.contextmanager
+    def _tpu_job_config(self):
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+            fv = flags.FlagValues()
+            TPUReplicatedJob.define_flags(fv)
+            fv.set_default("name", "test-name")
+            fv.set_default("instance_type", "tpu-v4-8")
+            fv.set_default("topology", None)
+            fv.mark_as_parsed()
+            cfg = TPUReplicatedJob.from_flags(fv)
+            cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
+            bundler_cfg = ArtifactRegistryBundler.from_spec([], fv=fv).set(image="test-image")
+            yield cfg, bundler_cfg
+
+    def test_depends_on_injected_into_call_output(self):
+        with self._tpu_job_config() as (cfg, bundler_cfg):
+            cfg.set(command="cmd", output_dir="gs://bucket/output")
+            cfg.depends_on = [JobDependency.default_config().set(job_name="leader")]
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            [entry] = job()
+            self.assertEqual(entry["dependsOn"], [{"name": "leader", "status": "Complete"}])
+
+    def test_multiple_depends_on(self):
+        with self._tpu_job_config() as (cfg, bundler_cfg):
+            cfg.set(command="cmd", output_dir="gs://bucket/output")
+            cfg.depends_on = [
+                JobDependency.default_config().set(job_name="leader"),
+                JobDependency.default_config().set(job_name="init", status="Running"),
+            ]
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            [entry] = job()
+            self.assertEqual(
+                entry["dependsOn"],
+                [{"name": "leader", "status": "Complete"}, {"name": "init", "status": "Running"}],
+            )
+
+    def test_no_depends_on_by_default(self):
+        with self._tpu_job_config() as (cfg, bundler_cfg):
+            cfg.set(command="cmd", output_dir="gs://bucket/output")
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            [entry] = job()
+            self.assertNotIn("dependsOn", entry)
 
 
 if __name__ == "__main__":

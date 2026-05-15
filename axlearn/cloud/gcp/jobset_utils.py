@@ -9,7 +9,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 from urllib.parse import urlparse
 
 from absl import flags
@@ -41,7 +41,7 @@ from axlearn.cloud.gcp.system_characteristics import (
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
@@ -290,6 +290,38 @@ class CompositeReplicatedJob(BaseReplicatedJob):
         return result
 
 
+class JobDependency(Configurable):
+    """Represents a jobset dependsOn entry for a replicated job."""
+
+    _VALID_STATUSES = ("Running", "Complete")
+
+    @config_class
+    class Config(Configurable.Config):
+        """Configures JobDependency.
+
+        Attributes:
+            job_name: Name of the replicated job this job depends on.
+            status: Required status of the dependency before the dependent job starts.
+                Must be one of "Running" or "Complete". Defaults to "Complete".
+        """
+
+        job_name: Required[str] = REQUIRED
+        status: Literal["Running", "Complete"] = "Complete"
+
+    def __init__(self, cfg: "JobDependency.Config"):
+        super().__init__(cfg)
+        if cfg.status not in self._VALID_STATUSES:
+            raise ValueError(
+                f"JobDependency.Config.status must be one of {self._VALID_STATUSES}, "
+                f"got {cfg.status!r}."
+            )
+
+    def build_depends_on(self) -> dict:
+        """Returns the jobset dependsOn entry dict."""
+        cfg: JobDependency.Config = self.config
+        return {"name": cfg.job_name, "status": cfg.status}
+
+
 class SingleReplicatedJob(BaseReplicatedJob):
     """Builds a single replicated job spec."""
 
@@ -326,6 +358,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         readiness_probe: ReadinessProbe.Config = ReadinessProbe.default_config()
         liveness_probe: LivenessProbe.Config = LivenessProbe.default_config()
         startup_probe: StartupProbe.Config = StartupProbe.default_config()
+        depends_on: Optional[Sequence[JobDependency.Config]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -388,6 +421,9 @@ class SingleReplicatedJob(BaseReplicatedJob):
         self.readiness_probe = cfg.readiness_probe.instantiate()
         self.liveness_probe = cfg.liveness_probe.instantiate()
         self.startup_probe = cfg.startup_probe.instantiate()
+        self.depends_on = (
+            [d.instantiate() for d in cfg.depends_on] if cfg.depends_on is not None else None
+        )
 
     @classmethod
     def verify_custom_topology_availability(cls, accelerator: AcceleratorConfig):
@@ -1092,13 +1128,14 @@ class TPUReplicatedJob(TPUJobBuilder):
             ),
         )
         # NOTE: the suffix here impacts how long job names can be.
-        return [
-            dict(
-                name=cfg.job_name,
-                replicas=cfg.accelerator.num_replicas,
-                template=job_spec,
-            )
-        ]
+        entry = dict(
+            name=cfg.job_name,
+            replicas=cfg.accelerator.num_replicas,
+            template=job_spec,
+        )
+        if self.depends_on is not None:
+            entry["dependsOn"] = [d.build_depends_on() for d in self.depends_on]
+        return [entry]
 
 
 class GPUReplicatedJob(SingleReplicatedJob):
@@ -1250,8 +1287,10 @@ class GPUReplicatedJob(SingleReplicatedJob):
                 template=self._build_pod(),
             ),
         )
-        # NOTE: the suffix here impacts how long job names can be.
-        return [dict(name="job", replicas=1, template=job_spec)]
+        entry = dict(name="job", replicas=1, template=job_spec)
+        if self.depends_on is not None:
+            entry["dependsOn"] = [d.build_depends_on() for d in self.depends_on]
+        return [entry]
 
 
 class A3HighReplicatedJob(GPUReplicatedJob):
