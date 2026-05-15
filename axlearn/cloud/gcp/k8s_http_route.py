@@ -2,6 +2,7 @@
 
 import copy
 import logging
+from enum import Enum
 from typing import Any
 
 import kubernetes as k8s
@@ -11,6 +12,122 @@ from axlearn.cloud.common.utils import FlagConfigurable, generate_job_name
 from axlearn.cloud.gcp.config import default_project
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
+
+
+class RouteType(Enum):
+    """Routing rule types for LWS HTTPRoute."""
+
+    # Inference serving: gRPC header-based routing + REST at /serve/<name>.
+    SERVE = "serve"
+    # Fine-tuning (SFT, RL, etc): REST routing at /<name> with path rewrite.
+    FINETUNE = "finetune"
+
+
+def _serve_rules(
+    *, name: str, service_name: str, service_namespace: str, http_port: int, grpc_port: int
+) -> list[dict]:
+    """Routing rules for Bolt-Serve inference jobs.
+
+    Rule 1: gRPC routing via header match on "serve-name".
+    Rule 2: REST routing via /serve/<name> path prefix with URL rewrite.
+    """
+    route_name = name.removesuffix("-long-running")
+    return [
+        {
+            "matches": [
+                {
+                    "headers": [
+                        {
+                            "type": "Exact",
+                            "name": "serve-name",
+                            "value": route_name,
+                        }
+                    ],
+                    "path": {"type": "PathPrefix", "value": "/"},
+                }
+            ],
+            "backendRefs": [
+                {
+                    "name": service_name,
+                    "namespace": service_namespace,
+                    "port": grpc_port,
+                }
+            ],
+        },
+        {
+            "matches": [
+                {
+                    "path": {
+                        "type": "PathPrefix",
+                        "value": f"/serve/{route_name}",
+                    }
+                }
+            ],
+            "filters": [
+                {
+                    "type": "URLRewrite",
+                    "urlRewrite": {
+                        "path": {
+                            "type": "ReplacePrefixMatch",
+                            "replacePrefixMatch": "/",
+                        }
+                    },
+                }
+            ],
+            "backendRefs": [
+                {
+                    "name": service_name,
+                    "namespace": service_namespace,
+                    "port": http_port,
+                }
+            ],
+        },
+    ]
+
+
+def _finetune_rules(
+    *, name: str, service_name: str, service_namespace: str, http_port: int, **_kwargs
+) -> list[dict]:
+    """Routing rules for fine-tuning jobs (SFT, RL, etc).
+
+    Rule 1: REST routing via /<name> path prefix with URL rewrite.
+    """
+    return [
+        {
+            "matches": [
+                {
+                    "path": {
+                        "type": "PathPrefix",
+                        "value": f"/{name}",
+                    }
+                }
+            ],
+            "filters": [
+                {
+                    "type": "URLRewrite",
+                    "urlRewrite": {
+                        "path": {
+                            "type": "ReplacePrefixMatch",
+                            "replacePrefixMatch": "/",
+                        }
+                    },
+                }
+            ],
+            "backendRefs": [
+                {
+                    "name": service_name,
+                    "namespace": service_namespace,
+                    "port": http_port,
+                }
+            ],
+        },
+    ]
+
+
+ROUTE_RULES = {
+    RouteType.SERVE.value: _serve_rules,
+    RouteType.FINETUNE.value: _finetune_rules,
+}
 
 
 class LWSHTTPRoute(FlagConfigurable):
@@ -28,23 +145,21 @@ class LWSHTTPRoute(FlagConfigurable):
             name: The name of the LWS resource.
             project: The GCP project.
             namespace: The namespace of the service.
-            gateway_name: The name of the Gateway for HTTP routing.
-            gateway_namespace: The namespace where HTTPRoute is created.
             https_gateway_name: The name of the HTTPS Gateway.
             https_gateway_namespace: The namespace of the HTTPS Gateway.
             http_port: The HTTP port on the service.
             grpc_port: The gRPC port on the service.
+            route_type: The routing rule type. One of "serve" or "finetune".
         """
 
         name: Required[str] = REQUIRED
         project: Required[str] = REQUIRED
         namespace: str = "default"
-        gateway_name: str = "bastion-inference-gateway"
-        gateway_namespace: str = "long-running-inference"
         https_gateway_name: str = "https-gateway"
         https_gateway_namespace: str = "gateway-system"
         http_port: int = 8080
         grpc_port: int = 9000
+        route_type: str = RouteType.SERVE.value
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -59,14 +174,14 @@ class LWSHTTPRoute(FlagConfigurable):
         )
         flags.DEFINE_string(
             "gateway_namespace",
-            "long-running-inference",
-            "Namespace where HTTPRoute is created.",
+            None,
+            "Deprecated. Kept for backward compatibility.",
             **common_kwargs,
         )
         flags.DEFINE_string(
             "gateway_name",
-            "bastion-inference-gateway",
-            "Name of the Gateway for HTTP routing.",
+            None,
+            "Deprecated. Kept for backward compatibility.",
             **common_kwargs,
         )
         flags.DEFINE_string(
@@ -93,30 +208,35 @@ class LWSHTTPRoute(FlagConfigurable):
             "gRPC port on the service.",
             **common_kwargs,
         )
+        flags.DEFINE_enum(
+            "route_type",
+            None,
+            [e.value for e in RouteType],
+            "Routing rule type.",
+            **common_kwargs,
+        )
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
         fv.set_default("namespace", fv.namespace or "default")
-        fv.set_default("gateway_namespace", fv.gateway_namespace or "long-running-inference")
-        fv.set_default("gateway_name", fv.gateway_name or "bastion-inference-gateway")
         fv.set_default("https_gateway_name", fv.https_gateway_name or "https-gateway")
         fv.set_default("https_gateway_namespace", fv.https_gateway_namespace or "gateway-system")
         fv.set_default("http_port", fv.http_port or 8080)
         fv.set_default("grpc_port", fv.grpc_port or 9000)
+        fv.set_default("route_type", fv.route_type or RouteType.SERVE.value)
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg: LWSHTTPRoute.Config = super().from_flags(fv, **kwargs)
         cfg.name = fv.name
         cfg.namespace = fv.namespace
-        cfg.gateway_namespace = fv.gateway_namespace
-        cfg.gateway_name = fv.gateway_name
         cfg.https_gateway_name = fv.https_gateway_name
         cfg.https_gateway_namespace = fv.https_gateway_namespace
         cfg.http_port = fv.http_port
         cfg.grpc_port = fv.grpc_port
+        cfg.route_type = fv.route_type
         return cfg
 
     @classmethod
@@ -157,6 +277,20 @@ class LWSHTTPRoute(FlagConfigurable):
             name=self.name,
         )
 
+        rules_fn = ROUTE_RULES.get(cfg.route_type)
+        if rules_fn is None:
+            raise ValueError(
+                f"Unknown route_type: {cfg.route_type!r}. "
+                f"Expected one of {list(ROUTE_RULES.keys())}."
+            )
+        rules = rules_fn(
+            name=self.name,
+            service_name=self.service_name,
+            service_namespace=self.service_namespace,
+            http_port=cfg.http_port,
+            grpc_port=cfg.grpc_port,
+        )
+
         # Build the HTTPRoute spec
         # NOTE: HTTPRoute MUST be in the same namespace as LWS for owner references to work.
         # Cross-namespace owner references are not supported by Kubernetes.
@@ -186,63 +320,7 @@ class LWSHTTPRoute(FlagConfigurable):
                         "namespace": cfg.https_gateway_namespace,
                     },
                 ],
-                "rules": [
-                    # Rule 1: gRPC routing (header match)
-                    # Because Bolt-Serve always add -long-running as suffix to model name
-                    # Strip it
-                    {
-                        "matches": [
-                            {
-                                "headers": [
-                                    {
-                                        "type": "Exact",
-                                        "name": "serve-name",
-                                        "value": self.name.removesuffix("-long-running"),
-                                    }
-                                ],
-                                "path": {"type": "PathPrefix", "value": "/"},
-                            }
-                        ],
-                        "backendRefs": [
-                            {
-                                "name": self.service_name,
-                                "namespace": self.service_namespace,
-                                "port": cfg.grpc_port,
-                            }
-                        ],
-                    },
-                    # Rule 2: REST routing (path match with URL rewrite)
-                    # Because Bolt-Serve always add -long-running as suffix to model name
-                    # Strip it
-                    {
-                        "matches": [
-                            {
-                                "path": {
-                                    "type": "PathPrefix",
-                                    "value": f"/serve/{self.name.removesuffix('-long-running')}",
-                                }
-                            }
-                        ],
-                        "filters": [
-                            {
-                                "type": "URLRewrite",
-                                "urlRewrite": {
-                                    "path": {
-                                        "type": "ReplacePrefixMatch",
-                                        "replacePrefixMatch": "/",
-                                    }
-                                },
-                            }
-                        ],
-                        "backendRefs": [
-                            {
-                                "name": self.service_name,
-                                "namespace": self.service_namespace,
-                                "port": cfg.http_port,
-                            }
-                        ],
-                    },
-                ],
+                "rules": rules,
             },
         }
 

@@ -5,6 +5,7 @@
 from unittest import mock
 
 from absl import flags
+from absl.flags import _exceptions as flag_exceptions
 
 from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import k8s_http_route
@@ -55,8 +56,6 @@ class LWSHTTPRouteTest(TestCase):
         http_route = cfg.instantiate()
 
         # Check default gateway settings
-        self.assertEqual(http_route.config.gateway_namespace, "long-running-inference")
-        self.assertEqual(http_route.config.gateway_name, "bastion-inference-gateway")
         self.assertEqual(http_route.config.https_gateway_name, "https-gateway")
         self.assertEqual(http_route.config.https_gateway_namespace, "gateway-system")
         self.assertEqual(http_route.config.http_port, 8080)
@@ -66,15 +65,15 @@ class LWSHTTPRouteTest(TestCase):
         """Tests custom gateway configuration."""
         cfg = self._http_route_config(
             project="fake-project",
-            gateway_namespace="custom-namespace",
-            gateway_name="custom-gateway",
+            https_gateway_name="custom-gateway",
+            https_gateway_namespace="custom-namespace",
             http_port=8888,
             grpc_port=9999,
         )
         http_route = cfg.instantiate()
 
-        self.assertEqual(http_route.config.gateway_namespace, "custom-namespace")
-        self.assertEqual(http_route.config.gateway_name, "custom-gateway")
+        self.assertEqual(http_route.config.https_gateway_name, "custom-gateway")
+        self.assertEqual(http_route.config.https_gateway_namespace, "custom-namespace")
         self.assertEqual(http_route.config.http_port, 8888)
         self.assertEqual(http_route.config.grpc_port, 9999)
 
@@ -281,6 +280,60 @@ class LWSHTTPRouteTest(TestCase):
             rest_backend = rest_rule["backendRefs"][0]
             self.assertEqual(
                 rest_backend["name"], "rfc-333-oliver-serv-long-running-long-running-service"
+            )
+
+    def test_default_route_type(self):
+        """Tests that default route_type is 'serve'."""
+        cfg = self._http_route_config(project="fake-project")
+        self.assertEqual(cfg.route_type, "serve")
+
+    def test_train_route_type_rules(self):
+        """Tests the routing rules for route_type='finetune'."""
+        cfg = self._http_route_config(
+            project="fake-project",
+            namespace="test-namespace",
+            route_type="finetune",
+        )
+        cfg.namespace = "test-namespace"
+        http_route = cfg.instantiate()
+
+        with mock.patch("kubernetes.client.CustomObjectsApi") as mock_api:
+            mock_instance = mock_api.return_value
+            mock_instance.get_namespaced_custom_object.return_value = {
+                "metadata": {"uid": "fake-uid"}
+            }
+
+            # pylint: disable-next=protected-access
+            route_dict = http_route._build_http_route()
+
+            rules = route_dict["spec"]["rules"]
+            self.assertEqual(len(rules), 1)
+
+            # Rule 1: REST routing via /<name>
+            train_rule = rules[0]
+            path_match = train_rule["matches"][0]["path"]
+            self.assertEqual(path_match["type"], "PathPrefix")
+            self.assertEqual(path_match["value"], "/fake-name")
+
+            # URL rewrite filter
+            filters = train_rule["filters"]
+            self.assertEqual(len(filters), 1)
+            self.assertEqual(filters[0]["type"], "URLRewrite")
+            self.assertEqual(filters[0]["urlRewrite"]["path"]["replacePrefixMatch"], "/")
+
+            # Backend
+            backend = train_rule["backendRefs"][0]
+            self.assertEqual(backend["name"], "fake-name-service")
+            self.assertEqual(backend["namespace"], "test-namespace")
+            self.assertEqual(backend["port"], 8080)
+
+    def test_invalid_route_type(self):
+        """Tests that an invalid route_type raises IllegalFlagValueError at parse time."""
+        with self.assertRaises(flag_exceptions.IllegalFlagValueError):
+            self._http_route_config(
+                project="fake-project",
+                namespace="test-namespace",
+                route_type="invalid",
             )
 
 
