@@ -26,6 +26,7 @@ from axlearn.common.learner import Learner
 from axlearn.common.loss import cross_entropy
 from axlearn.common.loss_metrics import BaseLossMetrics
 from axlearn.common.metrics import MetricSummary, WeightedSummary
+from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE
 from axlearn.common.module import (
     InvocationContext,
     OutputCollection,
@@ -118,7 +119,6 @@ class ModelTest(TestCase):
             .set(name="metrics_test")
             .instantiate(parent=None)
         )
-
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
 
@@ -233,6 +233,78 @@ class ModelTest(TestCase):
                 (float, int, jnp.ndarray),
                 f"Metric '{key}' should be scalar, but got {type(value).__name__}",
             )
+
+    def test_scan_chunk_equivalence(self):
+        """Test that scan_chunk produces identical loss and metrics to the non-scan path."""
+        batch_size, seq_len, vocab_size = 3, 16, 10
+        scan_chunk = 8
+
+        ref_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        test_cfg = ref_cfg.clone().set(scan_chunk=scan_chunk)
+
+        ref_model = ref_cfg.set(name="ref").instantiate(parent=None)
+        test_model = test_cfg.set(name="test").instantiate(parent=None)
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = ref_model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(1), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(2), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        common_kwargs = dict(prng_key=prng_key, state=model_params, is_training=True)
+        (ref_loss, ref_aux), _ = functional(
+            **common_kwargs,
+            module=ref_model,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+        )
+        (test_loss, test_aux), _ = functional(
+            **common_kwargs,
+            module=test_model,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+        )
+        self.assertAlmostEqual(ref_loss, test_loss, places=5)
+        self.assertNestedAllClose(ref_aux["metrics"], test_aux["metrics"])
+
+    def test_scan_chunk_equivalence_gradient(self):
+        """Test that scan_chunk produces identical gradients to the non-scan path."""
+        batch_size, seq_len, vocab_size = 3, 16, 10
+        scan_chunk = 8
+
+        ref_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        test_cfg = ref_cfg.clone().set(scan_chunk=scan_chunk)
+
+        ref_model = ref_cfg.set(name="ref").instantiate(parent=None)
+        test_model = test_cfg.set(name="test").instantiate(parent=None)
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = ref_model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(1), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(2), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        def loss_fn(model, params):
+            (loss, _), _ = functional(
+                module=model,
+                prng_key=prng_key,
+                state=params,
+                is_training=True,
+                inputs=dict(input_batch=input_batch),
+            )
+            return loss
+
+        ref_grads = jax.grad(lambda p: loss_fn(ref_model, p))(model_params)
+        test_grads = jax.grad(lambda p: loss_fn(test_model, p))(model_params)
+        self.assertNestedAllClose(ref_grads, test_grads)
 
     def test_segment_ids(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
@@ -860,6 +932,101 @@ class ModelAuxLossTest(TestCase):
             summaries["cross_entropy_loss"].value() + summaries["aux_loss"].value(),
             outputs.forward_outputs.loss,
         )
+
+    @parameterized.product(
+        stack_cfg=(
+            RepeatedTransformerLayer.default_config(),
+            StackedTransformerLayer.default_config(),
+        ),
+        # (seq_len, scan_chunk): cover divisible and non-divisible cases.
+        seq_len_and_chunk=(
+            (16, 8),
+            (16, 4),
+            (10, 8),
+            (16, 7),
+        ),
+    )
+    def test_aux_loss_scan_chunk(self, stack_cfg, seq_len_and_chunk):
+        """Test that scan_chunk produces identical loss/metrics with real MoE aux_loss.
+
+        Covers both divisible and non-divisible (seq_len, scan_chunk) combinations
+        — non-divisible cases require padding inside the chunked path.
+        """
+        seq_len, scan_chunk = seq_len_and_chunk
+        batch_size, vocab_size = 3, 10
+        hidden_dim = 8
+        num_experts = 4
+        num_groups = 1
+
+        ref_cfg = self._model_config(
+            stack_cfg=stack_cfg,
+            hidden_dim=hidden_dim,
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            aux_loss_regex=".*/aux_loss",
+            use_aux_layer=False,
+        )
+        # Replace feed_forward with real MoE.
+        ref_cfg.decoder.transformer.layer.feed_forward = (
+            TransformerFeedForwardMoE.default_config().set(
+                hidden_dim=4 * hidden_dim,
+                num_experts=num_experts,
+                num_groups=num_groups,
+            )
+        )
+        test_cfg = ref_cfg.clone().set(scan_chunk=scan_chunk)
+
+        ref_model = ref_cfg.set(name="ref").instantiate(parent=None)
+        test_model = test_cfg.set(name="test").instantiate(parent=None)
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = ref_model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(1), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(2), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        common_kwargs = dict(prng_key=prng_key, state=model_params, is_training=True)
+        (ref_loss, ref_aux), ref_oc = functional(
+            **common_kwargs,
+            module=ref_model,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+            drop_output_collections=(),
+        )
+        (test_loss, test_aux), test_oc = functional(
+            **common_kwargs,
+            module=test_model,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+            drop_output_collections=(),
+        )
+
+        # Loss and metrics must match.
+        self.assertAlmostEqual(ref_loss, test_loss, places=5)
+        self.assertNestedAllClose(ref_aux["metrics"], test_aux["metrics"])
+
+        # Verify aux_loss is present, non-zero (ensuring we're not in the early-return path
+        # where regex is None), and matches between chunked and non-chunked.
+        self.assertIn("aux_loss", ref_aux["metrics"])
+        self.assertGreater(float(ref_aux["metrics"]["aux_loss"]), 0.0)
+        self.assertAlmostEqual(
+            float(ref_aux["metrics"]["aux_loss"]),
+            float(test_aux["metrics"]["aux_loss"]),
+            places=5,
+        )
+
+        # Verify output collection summaries match.
+        ref_summaries = ref_oc.summaries
+        test_summaries = test_oc.summaries
+        for key in ("aux_loss", "cross_entropy_loss", "loss"):
+            self.assertIn(key, ref_summaries)
+            self.assertIn(key, test_summaries)
+            self.assertAlmostEqual(
+                ref_summaries[key].value(), test_summaries[key].value(), places=5
+            )
 
 
 if __name__ == "__main__":
