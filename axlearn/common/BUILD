@@ -629,6 +629,7 @@ py_test(
         ":loss",
         ":loss_metrics",
         ":metrics",
+        ":mixture_of_experts",
         ":module",
         ":optimizer_base",
         ":optimizers",

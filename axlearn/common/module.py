@@ -288,14 +288,18 @@ def propagate_repeated_output_collections(
     *,
     child_name_prefix: str,
     target_output_collection: OutputCollection,
+    merge_summaries: bool = False,
 ):
     """Propagates contents from `repeated_output_collection` to `target_target_output_collection`.
 
     Specifically:
     * module_outputs and state_updates from `repeated_output_collection` will be added to
       target_output_collection[child_name_prefix].
-    * For each summary value `v` of `repeated_output_collection`, `v[i]` will be added to
+    * If merge_summaries is False (default): for each summary value `v` of
+      `repeated_output_collection`, `v[i]` will be added to
       target_output_collection[f"{child_name_prefix}{i}"] for 0 <= i < N = num_children.
+    * If merge_summaries is True: summaries across iterations are accumulated via
+      Summary.accumulate() and stored in target_output_collection[child_name_prefix].
 
     Args:
         repeated_output_collection: An OutputCollection produced by a Jax loop (e.g., jax.vmap
@@ -303,6 +307,8 @@ def propagate_repeated_output_collections(
         child_name_prefix: The child name prefix used for children to be added to
             `target_output_collection`.
         target_output_collection: The target OutputCollection.
+        merge_summaries: If True, accumulate summaries across iterations instead of creating
+            separate children per iteration.
     """
     # Fill `target_output_collection[child_name_prefix]` with `repeated_output_collection`.
     child_output = target_output_collection.add_child(child_name_prefix)
@@ -311,18 +317,39 @@ def propagate_repeated_output_collections(
 
     # Each summary value in `repeated_output_collection` has shape (N, ...). For example,
     # if a repeated layer outputs a scalar summary value, it will have shape [N].
-    # Below we split the stacked values and output them separately under scope
-    # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
     summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
     if summary_values:
         first_summary_value = summary_values[0]
         assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."
         num_children = first_summary_value.shape[0]
-        for i in range(num_children):
-            child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
-            child_i_output.summaries.update(
-                jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
-            )
+        if merge_summaries:
+            # Accumulate summaries across all iterations into a single child.
+            summaries = repeated_output_collection.summaries
+            init = jax.tree.map(lambda x: x[0], summaries)
+            if num_children == 1:
+                merged = init
+            else:
+                rest = jax.tree.map(lambda x: x[1:], summaries)
+
+                def _accumulate(carry, iter_x):
+                    merged = jax.tree.map(
+                        lambda a, b: a.accumulate(b),
+                        carry,
+                        iter_x,
+                        is_leaf=lambda x: isinstance(x, Summary),
+                    )
+                    return merged, None
+
+                merged, _ = jax.lax.scan(_accumulate, init=init, xs=rest)
+            child_output.summaries.update(merged)
+        else:
+            # Split stacked values and output them separately under scope
+            # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
+            for i in range(num_children):
+                child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
+                child_i_output.summaries.update(
+                    jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+                )
 
 
 T = TypeVar("T")
@@ -1249,6 +1276,7 @@ def scan_in_context(
     child_name_prefix: str = "iter",
     unroll: Union[int, bool] = 1,
     remat_kwargs: Optional[dict[str, Any]] = None,
+    merge_summaries: bool = False,
 ) -> tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
@@ -1285,6 +1313,8 @@ def scan_in_context(
                 `scan_fn = jax.checkpoint(scan_fn, **remat_kwargs)`
             Otherwise, `jax.checkpoint` is not used.
             See https://docs.jax.dev/en/latest/_autosummary/jax.checkpoint.html.
+        merge_summaries: If True, accumulate summaries across scan iterations via
+            Summary.accumulate() instead of creating per-iteration children.
 
     Returns:
         The scan outputs (carry, ys):
@@ -1341,6 +1371,7 @@ def scan_in_context(
         scan_ys.pop("output_collection"),
         child_name_prefix=child_name_prefix,
         target_output_collection=ctx.output_collection,
+        merge_summaries=merge_summaries,
     )
 
     return carry, scan_ys["y_i"]
