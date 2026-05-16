@@ -143,7 +143,7 @@ class ConfigTest(parameterized.TestCase):
 
             @config_class
             class CConfig6(PConfig):
-                foo = lambda self: self
+                foo = lambda self: self  # noqa: E731 — lambda assignment is the pattern under test
 
             del CConfig6
 
@@ -599,7 +599,9 @@ class ConfigTest(parameterized.TestCase):
     )
     def test_config_for_function(self, kwargs, fn=None, expected=None):
         if fn is None:
-            fn = lambda x, y, z: (x, y, z)
+
+            def fn(x, y, z):
+                return (x, y, z)
 
         def build_and_invoke():
             cfg = config.config_for_function(fn)

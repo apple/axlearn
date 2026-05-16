@@ -81,7 +81,9 @@ class GetTrainerConfigTest(TestCase):
         ) as mock_fn:
             trainer_config_fn = None
             if trainer_config is not None:
-                trainer_config_fn = lambda: trainer_config
+
+                def trainer_config_fn():
+                    return trainer_config
 
             cfg = launch_trainer.get_trainer_config(
                 flag_values=fv, trainer_config_fn=trainer_config_fn
@@ -138,7 +140,8 @@ class GetTrainerConfigTest(TestCase):
         fv = _flag_values_from_dict(flag_values)
 
         # Mock the trainer config function
-        trainer_config_fn = lambda: mock_trainer_config
+        def trainer_config_fn():
+            return mock_trainer_config
 
         # Mock get_named_trainer_config to avoid dependency issues
         with mock.patch(
@@ -182,7 +185,8 @@ class GetTrainerConfigTest(TestCase):
         fv = _flag_values_from_dict(flag_values)
 
         # Mock the trainer config function
-        trainer_config_fn = lambda: mock_trainer_config
+        def trainer_config_fn():
+            return mock_trainer_config
 
         # Mock get_named_trainer_config to avoid dependency issues
         with mock.patch(

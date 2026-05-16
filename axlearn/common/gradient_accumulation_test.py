@@ -79,7 +79,8 @@ class TestMinibatchSharding(test_utils.TestCase):
                 jax.tree.map(check_sharding, tree_paths(input_batch), input_batch)
                 return input_batch
 
-            callback = lambda path, sharding: self.assertEqual(expected[path], sharding.spec)
+            def callback(path, sharding):
+                return self.assertEqual(expected[path], sharding.spec)
 
             callback_sharding(
                 input_batch=input_batch,

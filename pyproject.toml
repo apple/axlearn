@@ -182,7 +182,6 @@ ignore = [
     "E741",    # ambiguous variable names (l, I, O) — common in ML code
     # --- TODO(#2538): remove each after a follow-up fixup PR ---
     "E402",    # module-import-not-at-top-of-file (6)
-    "E731",    # lambda-assignment (33)
     "F401",    # unused-import, outside __init__ (3)
 ]
 

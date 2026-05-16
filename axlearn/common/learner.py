@@ -702,7 +702,10 @@ def _value_and_grad(
         The gradient `Updates` for `fun`. The returned `updates`  include a "default" key for
         `updates.forward_pass`. State updates are taken from the outputs of `fun`.
     """
-    split_params_fn = lambda params: [params, {}]
+
+    def split_params_fn(params):
+        return [params, {}]
+
     if should_compute_gradients is not None:
         fun, split_params_fn = _split_gradients(
             fun, should_compute_gradients=should_compute_gradients

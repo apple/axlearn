@@ -704,12 +704,23 @@ REPLACE_FUNCS = frozenset(
 def level_to_arg(cutout_const: float, translate_const: float):
     """Creates a dict mapping image operation names to their arguments."""
 
-    no_arg = lambda level: ()
-    posterize_arg = lambda level: _mult_to_arg(level, 4)
-    solarize_arg = lambda level: _mult_to_arg(level, 256)
-    solarize_add_arg = lambda level: _mult_to_arg(level, 110)
-    cutout_arg = lambda level: _mult_to_arg(level, cutout_const)
-    translate_arg = lambda level: _translate_level_to_arg(level, translate_const)
+    def no_arg(level):
+        return ()
+
+    def posterize_arg(level):
+        return _mult_to_arg(level, 4)
+
+    def solarize_arg(level):
+        return _mult_to_arg(level, 256)
+
+    def solarize_add_arg(level):
+        return _mult_to_arg(level, 110)
+
+    def cutout_arg(level):
+        return _mult_to_arg(level, cutout_const)
+
+    def translate_arg(level):
+        return _translate_level_to_arg(level, translate_const)
 
     args = {
         "AutoContrast": no_arg,
@@ -906,14 +917,19 @@ class MixupAndCutmix:
         """
         labels = tf.reshape(labels, [-1])
         augment_cond = tf.less(tf.random.uniform(shape=[], minval=0.0, maxval=1.0), self.mix_prob)
-        augment_a = lambda: self._update_labels(
-            *tf.cond(
-                tf.less(tf.random.uniform(shape=[], minval=0.0, maxval=1.0), self.switch_prob),
-                lambda: self._cutmix(images, labels),
-                lambda: self._mixup(images, labels),
+
+        def augment_a():
+            return self._update_labels(
+                *tf.cond(
+                    tf.less(tf.random.uniform(shape=[], minval=0.0, maxval=1.0), self.switch_prob),
+                    lambda: self._cutmix(images, labels),
+                    lambda: self._mixup(images, labels),
+                )
             )
-        )
-        augment_b = lambda: (images, self._smooth_labels(labels))
+
+        def augment_b():
+            return (images, self._smooth_labels(labels))
+
         return tf.cond(augment_cond, augment_a, augment_b)
 
     @staticmethod
