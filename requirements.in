@@ -1,0 +1,54 @@
+# Minimal requirements for struct module and test
+# Custom wheels for tensorflow-io and libtpu (matches pyproject.toml [tool.uv.pip] find-links).
+--find-links https://storage.googleapis.com/axlearn-wheels/wheels.html
+--find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
+jax==0.8.3
+jaxlib==0.8.3
+typing-extensions
+attrs
+numpy
+absl-py
+chex
+pytest
+wrapt
+optax
+tensorflow==2.19.1
+tensorflow_datasets
+msgpack
+portpicker
+grain
+array-record
+tensorstore
+aqtp
+seqio
+nltk
+etils[array-types,edc,enp,epath,epy,etqdm,etree]  # pin all extras to prevent uv from splitting across lines
+orbax_checkpoint
+hypothesis
+ml_goodput_measurement
+psutil
+google-cloud-storage
+wandb
+tokamax
+prefixed  # cloud/common/bundler.py — formatting file sizes, param counts
+prometheus-client  # cloud/common/metrics.py — TPU monitoring metrics
+kubernetes  # cloud/gcp/job.py, k8s_*.py — Kubernetes API client
+google-api-python-client  # cloud/gcp/node_pool.py, vm.py — GCP discovery API
+google-cloud-build  # cloud/gcp/cloud_build.py — Cloud Build API
+google-cloud-compute  # cloud/gcp/cloud_build.py — Compute Engine API
+tqdm  # cloud/gcp/storage.py — progress bars for uploads
+requests  # cloud/gcp/job_flink.py — HTTP client
+scikit-learn==1.6.1  # common/metrics_retrieval_test.py — must match pyproject.toml to keep _binary_clf_curve
+pillow  # common/summary_test.py — wandb.Image requires PIL
+google-api-core  # common/file_system_test.py — GCS exception types
+evaluate  # common/metrics_classification_test.py, metrics_correlation_test.py — HuggingFace evaluation metrics
+scipy  # common/metrics_correlation_test.py — pearsonr, spearmanr, rankdata
+levenshtein  # audio/evaler_asr.py — WER edit distance computation
+einops  # common/rattention/kernels/ — tensor rearrange (test-only, not thread-safe)
+pycocotools  # vision/coco_utils.py, vision/coco_evaluator.py — COCO evaluation API
+tensorflow-io @ https://storage.googleapis.com/axlearn-wheels/tensorflow_io/tensorflow_io-0.37.3-cp312-cp312-manylinux_2_31_x86_64.whl ; sys_platform == 'linux'  # common/env_test.py, common/input_tf_data.py — colleague's rebuild for #2457; Linux-only wheel
+tensorflow-io-gcs-filesystem @ https://storage.googleapis.com/axlearn-wheels/tensorflow_io_gcs_filesystem/tensorflow_io_gcs_filesystem-0.37.3-cp312-cp312-manylinux_2_31_x86_64.whl ; sys_platform == 'linux'  # paired rebuild for #2457; Linux-only wheel
+pika  # cloud/common/event_queue.py — RabbitMQ AMQP client
+tpu-info  # cloud/gcp/monitoring/tpu_client.py — TPU device metrics
+google-cloud-aiplatform  # cloud/gcp/vertexai_tensorboard.py — VertexAI SDK
+libtpu==0.0.32.4 # For TPU kernels
