@@ -90,14 +90,19 @@ class LinearAttentionPallasKernelTest(TestCase):
         assert_allclose(o_pallas, o_ref, atol=tol, rtol=tol)
 
         # pylint: disable=invalid-name
-        _residual_linear_attention = lambda q, k, v, h0: residual_linear_attention(
-            q, k, v, h0, window_size=window_size, feat_map=feat_map, chunk_size=chunk_size
-        )
+        def _residual_linear_attention(q, k, v, h0):
+            return residual_linear_attention(
+                q, k, v, h0, window_size=window_size, feat_map=feat_map, chunk_size=chunk_size
+            )
+
         _, pallas_backward = jax.vjp(_residual_linear_attention, q, k, v, h0)
         dq_pallas, dk_pallas, dv_pallas, dh0_pallas = pallas_backward(do)
-        _linear_attention_linear_scan = lambda q, k, v, h0: residual_linear_attention_linear_scan(
-            q, k, v, h0, window_size=window_size, feat_map=feat_map, chunk_size=chunk_size
-        )[0]
+
+        def _linear_attention_linear_scan(q, k, v, h0):
+            return residual_linear_attention_linear_scan(
+                q, k, v, h0, window_size=window_size, feat_map=feat_map, chunk_size=chunk_size
+            )[0]
+
         _, reference_backward = jax.vjp(_linear_attention_linear_scan, q, k, v, h0)
         dq_ref, dk_ref, dv_ref, dh0_ref = reference_backward(do)
 

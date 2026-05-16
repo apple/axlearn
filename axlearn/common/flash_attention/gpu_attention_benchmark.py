@@ -258,7 +258,10 @@ def bench_flash_attention(
             argnums=(0, 1, 2),
         )
     else:
-        fn = lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b))
+
+        def fn(q, k, v, b):
+            return base_fn(dict(query=q, key=k, value=v, bias=b))
+
     return measure(fn, q, k, v, bias)
 
 

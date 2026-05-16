@@ -151,7 +151,9 @@ class MetricAccumulator(Configurable):
 
     @staticmethod
     def _tree_map(*args, **kwargs):
-        is_leaf = lambda x: isinstance(x, Summary)
+        def is_leaf(x):
+            return isinstance(x, Summary)
+
         return jax.tree.map(*args, **kwargs, is_leaf=is_leaf)
 
 

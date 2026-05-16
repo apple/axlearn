@@ -441,7 +441,9 @@ def _resolve_ellipsis(in_shape: tuple[int, ...], lhs: _Axes, rhs: _Axes) -> tupl
         return lhs, rhs
 
     def count_explicit_axes(axes: _Axes) -> int:
-        count = lambda ax: 0 if ax == ellipsis else 1
+        def count(ax):
+            return 0 if ax == ellipsis else 1
+
         return sum(count(ax) for ax in axes)
 
     ndim = len(in_shape)

@@ -104,9 +104,11 @@ class MethodRunner:
         """
         with self._mesh:
             # TODO(zhucheng_tu,tom_gunter): Handle a mixture of pre-sharded and host-local inputs.
-            is_host_local_input_check = lambda x: (
-                (isinstance(x, jax.Array) and len(x.devices()) == 1) or isinstance(x, np.ndarray)
-            )
+            def is_host_local_input_check(x):
+                return (isinstance(x, jax.Array) and len(x.devices()) == 1) or isinstance(
+                    x, np.ndarray
+                )
+
             all_host_local_inputs = all(
                 is_host_local_input_check(t) for t in jax.tree_util.tree_leaves(input_batch)
             )

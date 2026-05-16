@@ -753,9 +753,14 @@ class ConfigBase:
             exit_fn: Called after an enter-able object has been traversed.
         """
         if not enter_fn:
-            enter_fn = lambda key, val, items: items
+
+            def enter_fn(key, val, items):
+                return items
+
         if not exit_fn:
-            exit_fn = lambda key, val: None
+
+            def exit_fn(key, val):
+                return None
 
         def _visit(key: str, val: Any):
             val_items = enter_fn(key, val, _default_enter_fn(key, val))

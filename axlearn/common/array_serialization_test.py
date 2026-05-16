@@ -326,13 +326,15 @@ class SerializerTest(parameterized.TestCase):
                 "bucket": "fake-bucket",
                 "path": f"fake-path/{time.time()}",
             }
-            create_spec = lambda arr: {
-                "driver": "zarr",
-                "kvstore": kvstore_spec,
-                "dtype": str(arr.dtype),
-                "create": True,
-                "delete_existing": True,
-            }
+
+            def create_spec(arr):
+                return {
+                    "driver": "zarr",
+                    "kvstore": kvstore_spec,
+                    "dtype": str(arr.dtype),
+                    "create": True,
+                    "delete_existing": True,
+                }
 
             try:
                 # Yield the temp path so our mock can redirect GCS writes to a local file.

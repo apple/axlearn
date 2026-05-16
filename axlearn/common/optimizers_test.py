@@ -1311,13 +1311,18 @@ class OptimizerTest(TestCase):
             self.assertEqual(new_state.count, 1)
 
             if isinstance(decay, float):
-                ema_fn = lambda p: (
-                    (1 - decay) * p.value
-                    if jnp.issubdtype(p.value.dtype, jnp.floating)
-                    else p.value
-                )
+
+                def ema_fn(p):
+                    return (
+                        (1 - decay) * p.value
+                        if jnp.issubdtype(p.value.dtype, jnp.floating)
+                        else p.value
+                    )
             else:
-                ema_fn = lambda p: p.value
+
+                def ema_fn(p):
+                    return p.value
+
             self.assertNestedAllClose(jax.tree.map(ema_fn, params), new_state.ema)
 
     def test_scale_by_schedule(self):

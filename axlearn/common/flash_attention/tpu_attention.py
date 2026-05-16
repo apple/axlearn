@@ -1163,7 +1163,9 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
             # Need key limit mask if padding is applied to keys
             original_mask_len = unpadded_k_len if unpadded_k_len % block_size != 0 else None
 
-        mul_block_len = lambda seq_len: seq_len + (-seq_len % block_size)
+        def mul_block_len(seq_len):
+            return seq_len + (-seq_len % block_size)
+
         mask_shape = (mul_block_len(query.shape[1]), mul_block_len(key.shape[1]))
         splash_mask = _to_splash_mask(mask, mask_shape=mask_shape, unpadded_k_len=original_mask_len)
         mesh = thread_resources.env.physical_mesh

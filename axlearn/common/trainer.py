@@ -1457,7 +1457,9 @@ def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
         else:
             return f"{x / m:.1f}M{suffix}"
 
-    mb_or_gb = lambda x: m_or_g(x, "B")
+    def mb_or_gb(x):
+        return m_or_g(x, "B")
+
     analysis_results = ""
     mem_stats = compiled.memory_analysis()
     # According to the doc, some platforms may not support it.

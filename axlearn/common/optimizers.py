@@ -605,7 +605,10 @@ def add_decayed_weights(
             updated_state = AddDecayedWeightsState(count_inc)
 
         param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
-        f = lambda g, p, s: g + weight_decay * lr_scale * p.value * s
+
+        def f(g, p, s):
+            return g + weight_decay * lr_scale * p.value * s
+
         updates = jax.tree.map(
             lambda x, y, z: None if x is None else f(x, y, z),
             updates,
