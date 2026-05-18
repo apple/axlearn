@@ -123,6 +123,18 @@ class ArtifactRegistryBundler(DockerBundler):
         return super()._build_and_push(*args, **kwargs)
 
 
+def _region_from_worker_pool(worker_pool: str) -> Optional[str]:
+    """Extracts the GCP region from a worker pool resource name.
+
+    Expected format: projects/<project>/locations/<region>/workerPools/<pool>
+    Returns None if the format doesn't match.
+    """
+    parts = worker_pool.split("/")
+    if len(parts) == 6 and parts[2] == "locations":
+        return parts[3]
+    return None
+
+
 @register_bundler
 class CloudBuildBundler(BaseDockerBundler):
     """A bundler that uses CloudBuild."""
@@ -292,12 +304,18 @@ options:
         cfg: CloudBuildBundler.Config = self.config
         wait_timeout = wait_timeout or cfg.timeout_seconds
         if cfg.is_async:
+            region = None
+            if cfg.private_worker_pool:
+                region = _region_from_worker_pool(cfg.private_worker_pool)
+                if region:
+                    logging.info("Using region '%s' from private_worker_pool config.", region)
             if tag := parse_tag_from_image_id(name):
                 wait_for_cloud_build(
                     project_id=cfg.project,
                     image_id=name,
                     tags=[tag],
                     wait_timeout=wait_timeout,
+                    region=region,
                 )
             else:
                 wait_for_cloud_build(
@@ -305,6 +323,7 @@ options:
                     image_id=self.id(name),
                     tags=[name],
                     wait_timeout=wait_timeout,
+                    region=region,
                 )
 
 
