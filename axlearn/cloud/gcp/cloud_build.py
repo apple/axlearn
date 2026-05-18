@@ -190,13 +190,14 @@ _last_known_region_for_build = {}
 
 
 def get_cloud_build_status(
-    *, project_id: str, image_name: str, tags: list[str]
+    *, project_id: str, image_name: str, tags: list[str], region: Optional[str] = None
 ) -> Optional[CloudBuildStatus]:
     """Gets the status of the latest CloudBuild by filtering on the build tags and image name.
 
     In order:
-    1. Queries the last known region where a build was previously found (if any).
-    2. Queries all regions if not found above.
+    1. If region is provided, queries that region directly.
+    2. Queries the last known region where a build was previously found (if any).
+    3. Queries all regions if not found above.
 
     The build results are not cached to ensure the latest build status is always retrieved.
 
@@ -204,21 +205,46 @@ def get_cloud_build_status(
         project_id: The GCP project ID.
         image_name: The name of the image.
         tags: A list of tags used to filter the builds.
+        region: If provided, queries this region directly without scanning.
 
     Returns:
         The CloudBuildStatus of the latest build, or None if no build is found.
     """
     tags_tuple = tuple(sorted(tags))
 
+    if region:
+        logging.info(
+            "Using region='%s' to check build status for image '%s'.",
+            region,
+            image_name,
+        )
+        return _get_latest_build_status_in_region(
+            project_id=project_id,
+            image_name=image_name,
+            tags=tags_tuple,
+            region=region,
+        )
+    logging.info("No region provided, falling back to region scan for image '%s'.", image_name)
+
     # If there is a last known region where a build was found previously, use it
     last_region = _last_known_region_for_build.get((project_id, image_name, tags_tuple))
     if last_region:
         logging.info("Checking last known region '%s' for image '%s'.", last_region, image_name)
-        status = _get_latest_build_status_in_region(
-            project_id=project_id, image_name=image_name, tags=tags_tuple, region=last_region
-        )
-        if status is not None:
-            return status
+        try:
+            status = _get_latest_build_status_in_region(
+                project_id=project_id, image_name=image_name, tags=tags_tuple, region=last_region
+            )
+            if status is not None:
+                return status
+        except Exception as e:  # pylint: disable=broad-except
+            # A transient API failure on the cached region (e.g. a regional
+            # CloudBuild endpoint outage) must not block discovery; fall back
+            # to the full region scan instead of propagating.
+            logging.warning(
+                "Lookup in last known region '%s' failed (%s); falling back to full scan.",
+                last_region,
+                e,
+            )
 
     # If not found yet, iterate over all available regions.
     all_regions = ["global"] + _list_available_regions(project_id)
@@ -226,9 +252,20 @@ def get_cloud_build_status(
         logging.info(
             "Checking region '%s' for image '%s' in project '%s'.", region, image_name, project_id
         )
-        status = _get_latest_build_status_in_region(
-            project_id=project_id, image_name=image_name, tags=tags_tuple, region=region
-        )
+        try:
+            status = _get_latest_build_status_in_region(
+                project_id=project_id, image_name=image_name, tags=tags_tuple, region=region
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            # A transient API failure in one region must not abort the whole
+            # scan, otherwise builds in any later region become undiscoverable
+            # for the duration of that region's outage. Skip and continue.
+            logging.warning(
+                "Lookup in region '%s' failed (%s); skipping to next region.",
+                region,
+                e,
+            )
+            continue
         if status is not None:
             _last_known_region_for_build[(project_id, image_name, tags_tuple)] = region
             return status
@@ -238,7 +275,12 @@ def get_cloud_build_status(
 
 
 def wait_for_cloud_build(
-    *, project_id: str, image_id: str, tags: List[str], wait_timeout: int = 3600
+    *,
+    project_id: str,
+    image_id: str,
+    tags: List[str],
+    wait_timeout: int = 3600,
+    region: Optional[str] = None,
 ) -> None:
     """Waits for CloudBuild to finish by polling for status.
 
@@ -247,6 +289,7 @@ def wait_for_cloud_build(
         image_id: The cloud build id of the image to wait for.
         tags: A list of tags used to filter the builds.
         wait_timeout: Overall timeout in seconds. Defaults to 1 hour.
+        region: If provided, queries this region directly without scanning.
 
     Raises:
         TimeoutError: If the build does not complete within the overall timeout.
@@ -263,7 +306,7 @@ def wait_for_cloud_build(
             raise TimeoutError(timeout_msg)
         try:
             build_status = get_cloud_build_status(
-                project_id=project_id, image_name=image_id, tags=tags
+                project_id=project_id, image_name=image_id, tags=tags, region=region
             )
         except Exception as e:  # pylint: disable=broad-except
             # TODO(liang-he,markblee): Distinguish transient from non-transient errors.

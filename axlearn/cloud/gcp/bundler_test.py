@@ -9,7 +9,12 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import BaseDockerBundler, _bundlers, get_bundler_config
 from axlearn.cloud.gcp import bundler
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
+from axlearn.cloud.gcp.bundler import (
+    ArtifactRegistryBundler,
+    CloudBuildBundler,
+    GCSTarBundler,
+    _region_from_worker_pool,
+)
 from axlearn.cloud.gcp.cloud_build import CloudBuildStatus
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.test_utils import TestCase
@@ -208,6 +213,38 @@ class CloudBuildBundlerTest(TestCase):
                 ):
                     b.wait_until_finished("test-name")
                 self.assertEqual(2, mock_status.call_count)
+
+
+class RegionFromWorkerPoolTest(TestCase):
+    """Tests for _region_from_worker_pool."""
+
+    @parameterized.parameters(
+        # Valid full resource name.
+        (
+            "projects/my-project/locations/us-west1/workerPools/my-pool",
+            "us-west1",
+        ),
+        # Different region.
+        (
+            "projects/907511300926/locations/us-east5/workerPools/ajax-private-pool-us-east5",
+            "us-east5",
+        ),
+    )
+    def test_valid(self, worker_pool, expected_region):
+        self.assertEqual(_region_from_worker_pool(worker_pool), expected_region)
+
+    @parameterized.parameters(
+        # Empty string.
+        ("",),
+        # Too few segments.
+        ("projects/my-project/locations/us-west1",),
+        # Too many segments.
+        ("projects/my-project/locations/us-west1/workerPools/my-pool/extra",),
+        # "locations" keyword in wrong position.
+        ("projects/my-project/notlocations/us-west1/workerPools/my-pool",),
+    )
+    def test_invalid(self, worker_pool):
+        self.assertIsNone(_region_from_worker_pool(worker_pool))
 
 
 if __name__ == "__main__":
