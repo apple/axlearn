@@ -1,0 +1,9 @@
+# gazelle:python_extension disabled
+
+load("@rules_python//python:defs.bzl", "py_library")
+
+py_library(
+    name = "axlearn",
+    srcs = ["__init__.py"],
+    visibility = ["//:__subpackages__"],
+)

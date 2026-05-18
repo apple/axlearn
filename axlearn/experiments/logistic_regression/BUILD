@@ -44,7 +44,10 @@ py_library(
 
 golden_config_test(
     name = "tutorial_golden_config_test",
-    module = ":tutorial",
+    checks = [
+        "check",
+        "check_init",
+    ],
     data = ["//axlearn/experiments/testdata:golden_files"],
-    checks = ["check", "check_init"],
+    module = ":tutorial",
 )
