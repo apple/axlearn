@@ -43,7 +43,6 @@ py_library(
     ],
 )
 
-
 py_library(
     name = "attention_bias",
     srcs = ["attention_bias.py"],
@@ -400,9 +399,9 @@ py_test(
     ],
     deps = [
         ":attention",
-        ":golden",
         ":config",
         ":embedding",
+        ":golden",
         ":layers",
         ":module",
         ":test_utils",
@@ -622,9 +621,9 @@ py_test(
     visibility = ["//visibility:public"],
     deps = [
         ":attention",
-        ":golden",
         ":causal_lm",
         ":config",
+        ":golden",
         ":learner",
         ":loss",
         ":loss_metrics",
@@ -2164,10 +2163,10 @@ py_library(
     name = "layers_test_lib",
     testonly = True,
     srcs = ["layers_test.py"],
-    visibility = ["//visibility:public"],
     data = [
         "//axlearn/experiments/testdata:axlearn.common.layers_test.npz",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":base_layer",
         ":config",
@@ -2941,10 +2940,10 @@ py_library(
     name = "bert_test_lib",
     testonly = True,
     srcs = ["bert_test.py"],
-    visibility = ["//visibility:public"],
     data = [
         "//axlearn/experiments/testdata:axlearn.common.bert_test.npz",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":attention",
         ":attention_bias",
@@ -2964,10 +2963,10 @@ py_library(
     name = "deberta_test_lib",
     testonly = True,
     srcs = ["deberta_test.py"],
-    visibility = ["//visibility:public"],
     data = [
         "//axlearn/experiments/testdata:axlearn.common.deberta_test.npz",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":attention",
         ":bert",
@@ -2986,10 +2985,10 @@ py_library(
     name = "t5_test_lib",
     testonly = True,
     srcs = ["t5_test.py"],
-    visibility = ["//visibility:public"],
     data = [
         "//axlearn/experiments/testdata:axlearn.common.t5_test.npz",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":attention",
         ":golden",
@@ -3175,6 +3174,7 @@ py_test(
         "@axlearn_pip//pytest",
     ],
 )
+
 py_test(
     name = "encoder_decoder_test",
     size = "large",
@@ -3430,8 +3430,8 @@ py_test(
         "//axlearn/experiments/testdata:axlearn.common.neural_retrieval_test.npz",
     ],
     deps = [
-        ":module",
         ":golden",
+        ":module",
         ":neural_retrieval",
         ":test_utils",
         ":text_dual_encoder",
@@ -3457,7 +3457,6 @@ py_test(
         "@axlearn_pip//jax",
     ],
 )
-
 
 py_test(
     name = "utils_text_dual_encoder_test",

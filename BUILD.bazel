@@ -1,14 +1,66 @@
+load("@axlearn_pip//:requirements.bzl", "all_whl_requirements")
+load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
+load("@rules_python//python:defs.bzl", "py_library")
 load("@rules_python//python/uv:lock.bzl", "lock")
+load("@rules_python_gazelle_plugin//manifest:defs.bzl", "gazelle_python_manifest")
+load("@rules_python_gazelle_plugin//modules_mapping:def.bzl", "modules_mapping")
+
+# Top-level Gazelle directives.
+# gazelle:python_generation_mode file
+# gazelle:python_test_file_pattern *_test.py
+# gazelle:exclude axlearn/audio
+# gazelle:exclude axlearn/cli
+# gazelle:exclude axlearn/common/monitoring
+# gazelle:exclude axlearn/common/ops
+# gazelle:exclude axlearn/common/rattention
+# gazelle:exclude axlearn/common/ssm_kernels
+# gazelle:exclude axlearn/cloud/gcp/examples
+# gazelle:exclude axlearn/cloud/gcp/monitoring
+# gazelle:exclude axlearn/experiments/audio
+# gazelle:exclude axlearn/experiments/testdata
+# gazelle:exclude axlearn/experiments/vision
+# gazelle:exclude build
+# gazelle:exclude ci
 
 package(default_visibility = ["//visibility:public"])
+
+modules_mapping(
+    name = "modules_map",
+    wheels = all_whl_requirements,
+)
+
+gazelle_python_manifest(
+    name = "gazelle_python_manifest",
+    modules_mapping = ":modules_map",
+    pip_repository_name = "axlearn_pip",
+    requirements = "//:requirements_lock.txt",
+)
+
+gazelle_binary(
+    name = "gazelle_binary",
+    languages = ["@rules_python_gazelle_plugin//python"],
+)
+
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_binary",
+)
 
 lock(
     name = "requirements",
     srcs = ["requirements.in"],
     out = "requirements_lock.txt",
-    generate_hashes = False,
     args = [
         "--find-links=https://storage.googleapis.com/axlearn-wheels/wheels.html",
         "--find-links=https://storage.googleapis.com/jax-releases/libtpu_releases.html",
     ],
+    generate_hashes = False,
+)
+
+py_library(
+    name = "conftest",
+    testonly = True,
+    srcs = ["conftest.py"],
+    visibility = ["//:__subpackages__"],
+    deps = ["@axlearn_pip//absl_py"],
 )

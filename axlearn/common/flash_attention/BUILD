@@ -88,11 +88,11 @@ py_library(
     name = "tpu_attention",
     srcs = ["tpu_attention.py"],
     deps = [
+        ":attention_types",
         ":common",
         ":remat",
         ":splash_attention_mask",
         ":tpu_splash_attention",
-        ":attention_types",
         "//axlearn/common:attention_bias",
         "//axlearn/common:utils",
         "//axlearn/common/kv_cache:base_kv_cache",
