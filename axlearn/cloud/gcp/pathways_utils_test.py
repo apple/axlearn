@@ -504,6 +504,54 @@ class PathwaysReplicatedJobTest(TestCase):
             volume_names = [v["name"] for v in pod_spec["volumes"]]
             self.assertIn("shared-memory", volume_names)
 
+    @parameterized.parameters(True, False, None)
+    def test_debug(self, pathways_debug):
+        with self._job_config(CloudBuildBundler, pathways_debug=pathways_debug) as (
+            cfg,
+            bundler_cfg,
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # Check head pod (proxy and RM)
+            # pylint: disable-next=protected-access
+            head_pod = builder._build_pathways_head_pod()
+            head_pod_spec = head_pod["spec"]
+
+            proxy_container = None
+            rm_container = None
+            for container in head_pod_spec["initContainers"]:
+                if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
+                    proxy_container = container
+                if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
+                    rm_container = container
+
+            self.assertIsNotNone(proxy_container)
+            self.assertIsNotNone(rm_container)
+
+            # Check worker pod
+            # pylint: disable-next=protected-access
+            worker_pod = builder._build_pathways_worker_pod()
+            worker_pod_spec = worker_pod["spec"]
+            worker_container = worker_pod_spec["containers"][0]
+
+            debug_flag = pathways_utils.PATHWAYS_DEBUG_VMODULE
+
+            if pathways_debug is True:
+                self.assertIn(debug_flag, proxy_container["args"])
+                self.assertIn(debug_flag, rm_container["args"])
+                self.assertIn(debug_flag, worker_container["args"])
+            else:
+                self.assertNotIn(debug_flag, proxy_container["args"])
+                self.assertNotIn(debug_flag, rm_container["args"])
+                self.assertNotIn(debug_flag, worker_container["args"])
+
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):
     """Tests PathwaysMultiheadReplicatedJob."""
@@ -1174,6 +1222,52 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             liveness_probe = container["livenessProbe"]
             self.assertIn("httpGet", liveness_probe)
             self.assertEqual(liveness_probe["httpGet"]["port"], 8080)
+
+    @parameterized.parameters(True, False, None)
+    def test_debug(self, pathways_debug):
+        with self._job_config(CloudBuildBundler, pathways_debug=pathways_debug) as (
+            cfg,
+            bundler_cfg,
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # Check leader pod (proxy and RM)
+            leader_pod = builder.build_leader_pod()
+            leader_pod_spec = leader_pod["spec"]
+
+            proxy_container = None
+            rm_container = None
+            for container in leader_pod_spec["containers"]:
+                if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
+                    proxy_container = container
+                if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
+                    rm_container = container
+
+            self.assertIsNotNone(proxy_container)
+            self.assertIsNotNone(rm_container)
+
+            # Check worker pod
+            worker_pod = builder.build_worker_pod()
+            worker_pod_spec = worker_pod["spec"]
+            worker_container = worker_pod_spec["containers"][0]
+
+            debug_flag = pathways_utils.PATHWAYS_DEBUG_VMODULE
+
+            if pathways_debug is True:
+                self.assertIn(debug_flag, proxy_container["args"])
+                self.assertIn(debug_flag, rm_container["args"])
+                self.assertIn(debug_flag, worker_container["args"])
+            else:
+                self.assertNotIn(debug_flag, proxy_container["args"])
+                self.assertNotIn(debug_flag, rm_container["args"])
+                self.assertNotIn(debug_flag, worker_container["args"])
 
 
 if __name__ == "__main__":
