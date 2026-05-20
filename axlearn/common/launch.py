@@ -10,7 +10,7 @@ import sys
 # pylint: disable-next=ungrouped-imports
 from axlearn.common import compiler_options
 
-# pylint: disable=wrong-import-position,wrong-import-order
+# pylint: disable=wrong-import-order
 
 
 instance_type = os.environ.get("TPU_TYPE", "none")
@@ -36,19 +36,17 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 # Import jax before tensorflow else to avoid problems such as:
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
-import jax  # jax must be imported before tensorflow!
+import jax  # noqa: E402  # jax must be imported before tensorflow!
 
 print(f"jax version={jax.__version__}", file=sys.stderr)
 if instance_type != "none":
     print(f"instance_type={instance_type} num_slices={num_tpu_slices}", file=sys.stderr)
 
-from absl import flags, logging
+from absl import flags, logging  # noqa: E402
 
-from axlearn.common.status_server import StatusHTTPServer
-from axlearn.common.utils import get_data_dir
-from axlearn.common.utils_spmd import setup as setup_spmd
-
-# pylint: enable=wrong-import-position
+from axlearn.common.status_server import StatusHTTPServer  # noqa: E402
+from axlearn.common.utils import get_data_dir  # noqa: E402
+from axlearn.common.utils_spmd import setup as setup_spmd  # noqa: E402
 
 flags.DEFINE_string(
     "data_dir",

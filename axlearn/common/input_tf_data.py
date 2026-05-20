@@ -87,7 +87,7 @@ try:
     #   ds = tf.data.TFRecordDataset("s3://my-bucket/data.tfrecord")
     # For more details, see https://github.com/tensorflow/tensorflow/issues/51583
     # pytype: disable=import-error
-    import tensorflow_io as tfio  # pylint: disable=unused-import
+    import tensorflow_io as tfio  # noqa: F401
 except ImportError:
     pass
 

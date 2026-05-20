@@ -2031,7 +2031,7 @@ class TransformerFeedForwardDropFreeMoETest(TestCase):
     def test_gmm_backend_tokamax_forward(self):
         """Test that TOKAMAX backend produces correct forward pass outputs."""
         try:
-            import tokamax  # pylint: disable=import-outside-toplevel,unused-import
+            import tokamax  # noqa: F401  # pylint: disable=import-outside-toplevel
         except ImportError:
             self.skipTest("tokamax library not installed.")
 

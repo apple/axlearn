@@ -105,8 +105,7 @@ from tensorflow import nest as tf_nest
 
 # tensorflow_io import is necessary for tf_io to understand s3:// scheme.
 try:
-    # pylint: disable-next=import-error,unused-import
-    import tensorflow_io  # pytype: disable=import-error
+    import tensorflow_io  # noqa: F401  # pytype: disable=import-error
 except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 

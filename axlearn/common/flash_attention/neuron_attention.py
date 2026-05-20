@@ -10,7 +10,7 @@ import jax.numpy as jnp
 # TODO(apoorvtintin): remove pytype disable when dependencies are public.
 # pytype: disable=import-error
 # Import needed to enable JAX cache on Neuron.
-import jax_neuronx  # pylint: disable=unused-import
+import jax_neuronx  # noqa: F401
 import neuronxcc.nki.language as nl
 from jax import custom_vjp
 from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
