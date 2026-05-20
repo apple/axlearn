@@ -99,7 +99,9 @@ class UtilsTest(parameterized.TestCase):
 
     def test_initialize_gcp_goodput_recorder(self):
         """Test that GCP goodput recorder can be dynamically imported."""
-        from axlearn.cloud.gcp import measurement as _  # pylint: disable=import-outside-toplevel
+        from axlearn.cloud.gcp import (
+            measurement as _,  # noqa: F401  # pylint: disable=import-outside-toplevel
+        )
 
         fv = flags.FlagValues()
         measurement.define_flags(flag_values=fv)
