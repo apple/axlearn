@@ -18,6 +18,7 @@ from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
     JobScheduler,
+    PriorityFIFO,
     ProjectJobSorter,
     ReporterFn,
     ReportingScheduler,
@@ -94,6 +95,77 @@ class ProjectJobSorterTest(absltest.TestCase):
         )
         for job_id, job_metadata in job_queue:
             self.assertDictEqual(jobs[job_id].resources, job_metadata.resources, msg=job_id)
+
+    def test_use_user_usage_disabled(self):
+        """When use_user_usage is disabled, jobs sort by (priority, creation_time) only."""
+        sorter: ProjectJobSorter = (
+            ProjectJobSorter.default_config().set(use_user_usage=False).instantiate()
+        )
+        yesterday = datetime.now() - timedelta(days=1)
+        jobs = {
+            "a1": JobMetadata(
+                user_id="a",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"tpu": 100},
+            ),
+            "a2": JobMetadata(
+                user_id="a",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"tpu": 100},
+            ),
+            "b3": JobMetadata(
+                user_id="b",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"tpu": 5},
+            ),
+        }
+        job_queue: JobQueue = sorter.sort(jobs)
+        # Without user usage, jobs sort by (priority, creation_time) only.
+        # User "a" is NOT deprioritized despite high resource usage.
+        self.assertSequenceEqual(
+            ["a1", "a2", "b3"],
+            [job_id for job_id, _ in job_queue],
+        )
+
+    def test_use_user_usage_default_true(self):
+        """Default use_user_usage=True enables fair-share sorting."""
+        sorter: ProjectJobSorter = ProjectJobSorter.default_config().instantiate()
+        yesterday = datetime.now() - timedelta(days=1)
+        jobs = {
+            "a1": JobMetadata(
+                user_id="a",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"tpu": 100},
+            ),
+            "a2": JobMetadata(
+                user_id="a",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"tpu": 100},
+            ),
+            "b3": JobMetadata(
+                user_id="b",
+                project_id="p1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"tpu": 5},
+            ),
+        }
+        job_queue: JobQueue = sorter.sort(jobs)
+        # Default (True): user "b" gets prioritized over "a"'s second job.
+        self.assertSequenceEqual(
+            ["a1", "b3", "a2"],
+            [job_id for job_id, _ in job_queue],
+        )
 
 
 def _mock_job_metadata(resources, creation_time=None):
@@ -939,6 +1011,92 @@ class TestJobScheduler(parameterized.TestCase):
                 mock_reporter_as_fn.assert_called_once()
             else:
                 mock_reporter_as_fn.assert_not_called()
+
+    def test_per_project_sorter_overrides(self):
+        """per_project_sorter_overrides end-to-end: override disables fair-share for project1."""
+        quota_info = QuotaInfo(
+            total_resources=[{"tpu": 1000}],
+            project_resources={
+                "project1": {"tpu": 500},
+                "project2": {"tpu": 500},
+            },
+            project_membership={"project1": [], "project2": []},
+        )
+        cfg = JobScheduler.default_config().set(
+            quota=config_for_function(lambda: lambda *args: quota_info),
+            # project1: use FIFO policy — jobs sort by (priority, creation_time) only.
+            per_project_sorter_overrides={"project1": PriorityFIFO},
+        )
+        sched: JobScheduler = cfg.instantiate()
+
+        yesterday = datetime.now() - timedelta(days=1)
+
+        # project1 jobs: two users, same priority.
+        # user "a" submits first with a large job, then user "b" submits a small job.
+        # With fair-share DISABLED: order should follow creation_time → a1, a2, b1.
+        # With fair-share ENABLED:  after a1 consumes 100 TPUs, b1 should jump ahead of a2.
+        jobs = {
+            "a1": JobMetadata(
+                user_id="a",
+                project_id="project1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"tpu": 100},
+            ),
+            "a2": JobMetadata(
+                user_id="a",
+                project_id="project1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"tpu": 100},
+            ),
+            "b1": JobMetadata(
+                user_id="b",
+                project_id="project1",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"tpu": 5},
+            ),
+            # project2 jobs: same setup but uses default fair-share sorter.
+            "c1": JobMetadata(
+                user_id="c",
+                project_id="project2",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=1),
+                resources={"tpu": 100},
+            ),
+            "c2": JobMetadata(
+                user_id="c",
+                project_id="project2",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=2),
+                resources={"tpu": 100},
+            ),
+            "d1": JobMetadata(
+                user_id="d",
+                project_id="project2",
+                priority=2,
+                creation_time=yesterday + timedelta(seconds=3),
+                resources={"tpu": 5},
+            ),
+        }
+
+        results = sched.schedule(jobs, {})
+        verdicts = results.job_verdicts
+
+        # All jobs should run (plenty of resources).
+        for job_id in ["a1", "a2", "b1", "c1", "c2", "d1"]:
+            self.assertTrue(verdicts[job_id].should_run(), msg=f"{job_id} should run")
+
+        # project1 (fair-share disabled): job order must be a1 → a2 → b1.
+        # The scheduler processes jobs in sorted order; we check relative positions in verdicts.
+        p1_order = [jid for jid in verdicts if jid in ("a1", "a2", "b1")]
+        self.assertEqual(["a1", "a2", "b1"], p1_order, msg="project1 should sort by creation_time")
+
+        # project2 (fair-share enabled): after c1 schedules, user "d" should jump ahead of c2.
+        # Fair-share ordering: c1 → d1 → c2.
+        p2_order = [jid for jid in verdicts if jid in ("c1", "c2", "d1")]
+        self.assertEqual(["c1", "d1", "c2"], p2_order, msg="project2 should use fair-share")
 
 
 if __name__ == "__main__":

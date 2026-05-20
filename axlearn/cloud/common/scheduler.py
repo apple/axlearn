@@ -41,14 +41,29 @@ from axlearn.common.config import (
 class ProjectJobSorter(Configurable):
     """Sorts jobs within a project based on the user id, creation time, and resource demands."""
 
+    @config_class
+    class Config(Configurable.Config):
+        """Configures ProjectJobSorter.
+
+        Attributes:
+            use_user_usage: When True, users with higher cumulative resource usage are
+                deprioritized within the same priority level (usage-based fairshare). When False,
+                jobs are sorted by (priority, creation_time) only, with no fairness adjustment.
+        """
+
+        use_user_usage: bool = True
+
     def sort(self, jobs: Mapping[str, JobMetadata]) -> JobQueue:
         """Sorts jobs into a queue.
 
-        Within a project, jobs are sorted first by priority (1 - highest), then aggregate usages
-        of the users, and finally creation times:
+        When ``use_user_usage`` is True, jobs are sorted first by priority (1 - highest), then by
+        aggregate resource usage of the submitting user, and finally by creation time:
         (1) Of jobs of the same priority, between jobs of different users, those created by users
             with less resource usage will be prioritized;
         (2) Between jobs of the same user, the older jobs will be prioritized.
+
+        When ``use_user_usage`` is False, the usage-based fairshare step is skipped and jobs are
+        sorted by (priority, creation_time) only, without any per-user deprioritization.
 
         Args:
             jobs: A mapping from job ids to metadata.
@@ -57,6 +72,7 @@ class ProjectJobSorter(Configurable):
             A queue of jobs to be scheduled, with higher priority jobs in front of lower priority
             ones.
         """
+        cfg = self.config
         # Mapping: user_id -> List[(priority, creation_time, job_id)].
         user_job_map = collections.defaultdict(list)
         for job_id, job_metadata in jobs.items():
@@ -106,10 +122,15 @@ class ProjectJobSorter(Configurable):
             if user_jobs:
                 # The user has more jobs. Add it back to `user_queue`.
                 next_priority, next_creation_time, next_job_id = user_jobs[0]
+                next_usage = 0
+                if cfg.use_user_usage:
+                    next_usage = queue_item.usage + self._aggregate_resources(
+                        job_metadata.resources
+                    )
                 user_queue.put(
                     QueueItem(
                         priority=next_priority,
-                        usage=queue_item.usage + self._aggregate_resources(job_metadata.resources),
+                        usage=next_usage,
                         creation_time=next_creation_time,
                         job_id=next_job_id,
                         user_id=queue_item.user_id,
@@ -121,6 +142,15 @@ class ProjectJobSorter(Configurable):
     def _aggregate_resources(self, resource_map: ResourceMap[int]) -> int:
         """Subclasses can override this method."""
         return sum(resource_map.values())
+
+
+# Named sorter configs.
+PriorityFairness: ProjectJobSorter.Config = ProjectJobSorter.default_config().set(
+    use_user_usage=True,
+)
+PriorityFIFO: ProjectJobSorter.Config = ProjectJobSorter.default_config().set(
+    use_user_usage=False,
+)
 
 
 @dataclasses.dataclass
@@ -627,11 +657,13 @@ class JobScheduler(Configurable):
             quota: A config that instantiates to a QuotaFn.
             sorter: Sorter that decides ordering of jobs-to-schedule.
             scheduler: Scheduler that decides whether to resume/suspend jobs.
+            per_project_sorter_overrides: Per-project sorter configs.
         """
 
         quota: Required[ConfigOr[QuotaFn]] = REQUIRED
-        sorter: ProjectJobSorter.Config = ProjectJobSorter.default_config()
+        sorter: ProjectJobSorter.Config = PriorityFairness
         scheduler: BaseScheduler.Config = TierScheduler.default_config()
+        per_project_sorter_overrides: Optional[dict[str, ProjectJobSorter.Config]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -639,6 +671,10 @@ class JobScheduler(Configurable):
         self._quota = maybe_instantiate(cfg.quota)
         self._sorter: ProjectJobSorter = cfg.sorter.instantiate()
         self._scheduler: BaseScheduler = cfg.scheduler.instantiate()
+        self._project_sorters: dict[str, ProjectJobSorter] = {}
+        if cfg.per_project_sorter_overrides:
+            for project_id, override_cfg in cfg.per_project_sorter_overrides.items():
+                self._project_sorters[project_id] = override_cfg.instantiate()
 
     def schedule(
         self,
@@ -670,7 +706,8 @@ class JobScheduler(Configurable):
 
         # Sort jobs according to priority.
         for project_id, jobs_to_sort in project_jobs.items():
-            project_jobs[project_id] = self._sorter.sort(jobs_to_sort)
+            sorter = self._project_sorters.get(project_id, self._sorter)
+            project_jobs[project_id] = sorter.sort(jobs_to_sort)
 
         # Fetch quotas each time.
         quota_info = self._quota()
