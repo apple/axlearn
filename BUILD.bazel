@@ -1,3 +1,4 @@
+load("@REDACTED//tools/buildifier:defs.bzl", "buildifier")
 load("@axlearn_pip//:requirements.bzl", "all_whl_requirements")
 load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@rules_python//python:defs.bzl", "py_library")
@@ -44,6 +45,10 @@ gazelle_binary(
 gazelle(
     name = "gazelle",
     gazelle = ":gazelle_binary",
+)
+
+buildifier(
+    name = "buildifier",
 )
 
 lock(
