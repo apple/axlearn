@@ -123,6 +123,34 @@ class ArtifactRegistryBundler(DockerBundler):
         return super()._build_and_push(*args, **kwargs)
 
 
+def _image_exists_in_artifact_registry(image_id: str) -> bool:
+    """Checks whether a Docker image exists in Artifact Registry.
+
+    Args:
+        image_id: Full Artifact Registry image URL with tag, e.g.
+            ``us-docker.pkg.dev/my-project/my-repo/my-image:v1``.
+
+    Returns:
+        True if the image exists, False otherwise.
+    """
+    logging.info("Checking Artifact Registry for image: %s", image_id)
+    result = subprocess.run(
+        ["gcloud", "artifacts", "docker", "images", "describe", image_id],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        logging.info("Image found in Artifact Registry: %s", image_id)
+        return True
+    logging.warning(
+        "Image not found in Artifact Registry: %s\n%s",
+        image_id,
+        result.stderr.decode().strip(),
+    )
+    return False
+
+
 def _region_from_worker_pool(worker_pool: str) -> Optional[str]:
     """Extracts the GCP region from a worker pool resource name.
 
@@ -291,7 +319,11 @@ options:
     def wait_until_finished(self, name: str, wait_timeout: Optional[int] = None):
         """Waits for async CloudBuild to finish by polling for status.
 
-        Is a no-op if `cfg.is_async` is False.
+        When ``cfg.skip_bundle`` is True, no build was submitted; instead the image is
+        verified to already exist in Artifact Registry.  If it does not, a
+        ``RuntimeError`` is raised so the GKE runner can abort the job cleanly.
+
+        Is a no-op if ``cfg.is_async`` is False.
 
         Args:
             name: Bundle name.
@@ -303,6 +335,14 @@ options:
         """
         cfg: CloudBuildBundler.Config = self.config
         wait_timeout = wait_timeout or cfg.timeout_seconds
+        if cfg.skip_bundle:
+            image_id = name if parse_tag_from_image_id(name) else self.id(name)
+            logging.info("skip_bundle=True: verifying image exists in registry: %s", image_id)
+            if not _image_exists_in_artifact_registry(image_id):
+                raise RuntimeError(
+                    f"skip_bundle=True but image does not exist in Artifact Registry: {image_id}"
+                )
+            return
         if cfg.is_async:
             region = None
             if cfg.private_worker_pool:
