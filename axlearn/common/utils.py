@@ -2147,13 +2147,18 @@ def replace_layer_config_recursively(
                         **{k: v for k, v in value.items() if k not in exclude_kwargs},
                     )
                     setattr(child, key, new_cfg)
-        elif isinstance(child, (list, tuple, range)):
-            for idx, value in enumerate(child):
-                if isinstance(value, target_cls.Config):
-                    new_cfg = source_config.clone(
-                        **{k: v for k, v in value.items() if k not in exclude_kwargs},
-                    )
-                    child[idx] = new_cfg
+                elif isinstance(value, (list, tuple)):
+                    new_value = list(value)
+                    changed = False
+                    for idx, item in enumerate(value):
+                        if isinstance(item, target_cls.Config):
+                            new_cfg = source_config.clone(
+                                **{k: v for k, v in item.items() if k not in exclude_kwargs},
+                            )
+                            new_value[idx] = new_cfg
+                            changed = True
+                    if changed:
+                        setattr(child, key, type(value)(new_value))
 
     cfg.visit(visit_fn=lambda k, v: None, exit_fn=exit_fn)
     return cfg

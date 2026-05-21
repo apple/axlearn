@@ -174,17 +174,18 @@ class ReplaceLayerConfigRecursivelyTest(TestCase):
         self.assertEqual(cfg.layer.num_layers, updated_num_layers)
         self.assertEqual(cfg.layer.layer.num_layers, updated_num_layers)
 
-    def test_update_layer_list(
-        self,
-    ):
+    @parameterized.parameters(list, tuple)
+    def test_update_layer_sequence(self, sequence_type):
         updated_input_dim = 300
         cfg = StackedTransformerLayer.default_config()
         cfg.set(
             num_layers=2,
-            layer=[
-                TransformerLayer.default_config().set(input_dim=2),
-                TransformerLayer.default_config().set(input_dim=4),
-            ],
+            layer=sequence_type(
+                [
+                    TransformerLayer.default_config().set(input_dim=2),
+                    TransformerLayer.default_config().set(input_dim=4),
+                ]
+            ),
         )
         replace_layer_config_recursively(
             cfg,
@@ -193,8 +194,9 @@ class ReplaceLayerConfigRecursivelyTest(TestCase):
             exclude_keys=("input_dim",),
         )
 
-        # Check that every element in the layer list has  been replaced by
-        # a new TransformerLayer with a pre-defined input_dim.
+        # Check that every element in the layer sequence has been replaced by a new TransformerLayer
+        # with a pre-defined input_dim, and that the sequence type is preserved.
+        self.assertIsInstance(cfg.layer, sequence_type)
         self.assertEqual(cfg.layer[0].input_dim, updated_input_dim)
         self.assertEqual(cfg.layer[1].input_dim, updated_input_dim)
 
