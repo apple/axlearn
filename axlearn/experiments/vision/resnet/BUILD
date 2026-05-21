@@ -1,11 +1,14 @@
-load("//:golden_config.bzl", "golden_config_test")
 load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("//:golden_config.bzl", "golden_config_test")
 
 py_library(
     name = "__init__",
     srcs = ["__init__.py"],
     visibility = ["//visibility:public"],
-    deps = [":common", ":imagenet_trainer"],
+    deps = [
+        ":common",
+        ":imagenet_trainer",
+    ],
 )
 
 py_library(
@@ -55,9 +58,13 @@ py_test(
 
 golden_config_test(
     name = "imagenet_trainer_golden_config_test",
-    module = ":imagenet_trainer",
+    checks = [
+        "check",
+        "check_init",
+        "check_regularizer",
+    ],
     data = ["//axlearn/experiments/testdata:golden_files"],
-    checks = ["check", "check_init", "check_regularizer"],
+    module = ":imagenet_trainer",
 )
 
 py_test(

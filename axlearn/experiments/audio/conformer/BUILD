@@ -1,5 +1,5 @@
-load("//:golden_config.bzl", "golden_config_test")
 load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("//:golden_config.bzl", "golden_config_test")
 
 py_library(
     name = "__init__",
@@ -80,9 +80,13 @@ py_test(
 
 golden_config_test(
     name = "librispeech_trainer_golden_config_test",
-    module = ":librispeech_trainer",
+    checks = [
+        "check",
+        "check_init",
+        "check_regularizer",
+    ],
     data = ["//axlearn/experiments/testdata:golden_files"],
-    checks = ["check", "check_init", "check_regularizer"],
+    module = ":librispeech_trainer",
 )
 
 py_test(

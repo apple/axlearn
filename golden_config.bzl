@@ -46,6 +46,7 @@ def _generate_golden_test_script_impl(ctx):
     # Relative path from generated script to experiments/testdata/
     # Script is at {package}/{name}_main.py, testdata is at axlearn/experiments/testdata/
     package_parts = module.label.package.split("/")
+
     # Count dirs from package to axlearn/experiments/
     # e.g., axlearn/experiments/text/gpt -> need ../../testdata/
     experiments_idx = -1
