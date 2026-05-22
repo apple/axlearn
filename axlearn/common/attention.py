@@ -1745,7 +1745,7 @@ class MultiheadAttention(BaseLayer):
         # Config used to scale projected queries prior to computing logits.
         query_scale: BaseScaleQK.Config = ScaleQuery.default_config()
         # Config used to scale projected keys prior to computing logits.
-        key_scale: BaseScaleQK.Config = ScaleKey.default_config()
+        key_scale: Optional[BaseScaleQK.Config] = ScaleKey.default_config()
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = None
         # A function to compute the boolean mask to apply when computing the attention
@@ -1766,6 +1766,7 @@ class MultiheadAttention(BaseLayer):
         # Determines KV cache's behavior, such as standard, sliding window, sparse KV cache, etc.
         kv_cache: BaseKVCache.Config = KVCache.default_config()
 
+        # Note: scale_kv_before_cache_update=None|False is DEPRECATED.
         # Sets whether key and value should be scaled before `extend_step` or after.
         # If False or None, the following code sequence will apply.
         # ```python
@@ -1782,8 +1783,10 @@ class MultiheadAttention(BaseLayer):
         # ```
         #
         # Generally, scaling k and v before storing them into the KV cache (i.e. extend_step) leads
-        # to better inference performance. However, this might be incompatible to some KV sharing
-        # architectures that have different scaling factors for KV-shared layers.
+        # to better inference performance. When True, KV-shared layers reuse the keys already
+        # scaled by the source layer, so this layer's `key_scale` is ignored (identity is used);
+        # this is incompatible with architectures whose KV-shared layers need a `key_scale`
+        # differing from the source layer's.
         scale_kv_before_cache_update: Optional[bool] = None
 
         # If true, use learnable logit sinks.
@@ -1843,8 +1846,21 @@ class MultiheadAttention(BaseLayer):
         self._add_child("dropout", cfg.dropout)
         # Add query scaling layer.
         self._add_child("scale_query", cfg.query_scale.set(per_head_dim=self.per_head_dim()))
-        # Add key scaling layer.
-        self._add_child("scale_key", cfg.key_scale.set(per_head_dim=self.per_head_dim()))
+        # When kv_sharing and scale_kv_before_cache_update are both on, the shared K is already
+        # scaled by the source layer, so set identity to scale_key.
+        is_kv_sharing = self.i_proj.is_kv_sharing(cfg.input_linear)
+        skip_key_scale = is_kv_sharing and cfg.scale_kv_before_cache_update
+        if skip_key_scale:
+            if cfg.key_scale is not None:
+                logging.warning(
+                    "%s: ignoring `key_scale` because this is a KV-shared layer and "
+                    "`scale_kv_before_cache_update=True`; the source layer's scaled K is reused.",
+                    self.path(),
+                )
+            key_scale_cfg = ScaleKey.default_config()
+        else:
+            key_scale_cfg = cfg.key_scale
+        self._add_child("scale_key", key_scale_cfg.set(per_head_dim=self.per_head_dim()))
         self._add_child("kv_cache", cfg.kv_cache)
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
@@ -1988,13 +2004,6 @@ class MultiheadAttention(BaseLayer):
         v_proj = maybe_shard(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
 
         if cfg.scale_kv_before_cache_update:
-            if kv_sharing:
-                # TODO(hanzhi-zhou): Relax this restriction. Some KV sharing models support this if
-                # KV-shared layers don't have their own KV normalization layers.
-                raise ValueError(
-                    "KV sharing (e.g. when kv_state is not None) is not supported if "
-                    "scale_kv_before_cache_update=True."
-                )
             q_proj = self._remat_name(q_proj, "q_proj")
             k_proj = self._remat_name(k_proj, "k_proj")
             v_proj = self._remat_name(v_proj, "v_proj")
