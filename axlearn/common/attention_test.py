@@ -2719,8 +2719,6 @@ class MultiheadAttentionTest(TestCase):
         if input_linear in (QLinear, _QLinearWithKvUpdate):
             if causal_type == "sliding_window":
                 self.skipTest("QLinear variants don't support sliding window mask.")
-            if scale_kv_before_cache_update:
-                self.skipTest("QLinear variants don't support scale_kv_before_cache_update=True")
         if page_size is not None:
             if extend_step_len > 1:
                 self.skipTest("PagedKVCache doesn't support extending multiple steps yet.")
@@ -2808,20 +2806,13 @@ class MultiheadAttentionTest(TestCase):
             kv_state=kv_state,
             return_aux=return_aux,
         )
-        with (
-            self.assertRaises(ValueError)
-            if scale_kv_before_cache_update
-            else contextlib.nullcontext()
-        ):
-            forward_outputs, _ = F(
-                layer,
-                state=layer_params,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
-            )
-        if scale_kv_before_cache_update:
-            return
+        forward_outputs, _ = F(
+            layer,
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=inputs,
+        )
         self.assertNestedEqual(forward_outputs.kv_state.k_proj, kv_state.k_proj)
         self.assertNestedEqual(forward_outputs.kv_state.v_proj, kv_state.v_proj)
 
