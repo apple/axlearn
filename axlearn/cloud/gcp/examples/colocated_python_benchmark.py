@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import ast
 import os
 import time
 from contextlib import contextmanager
@@ -82,8 +83,11 @@ def create_state_spec_from_checkpoint(ckpt_path: str):
             continue
 
         if isinstance(value, dict) and "shape" in value and "dtype" in value:
-            # pylint: disable=eval-used
-            shape = eval(value["shape"]) if isinstance(value["shape"], str) else value["shape"]
+            shape = (
+                ast.literal_eval(value["shape"])
+                if isinstance(value["shape"], str)
+                else value["shape"]
+            )
             dtype_str = value["dtype"]
 
             # Convert dtype string to jax dtype
