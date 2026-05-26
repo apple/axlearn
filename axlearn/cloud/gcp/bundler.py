@@ -320,8 +320,8 @@ options:
         """Waits for async CloudBuild to finish by polling for status.
 
         When ``cfg.skip_bundle`` is True, no build was submitted; instead the image is
-        verified to already exist in Artifact Registry.  If it does not, a
-        ``RuntimeError`` is raised so the GKE runner can abort the job cleanly.
+        verified to already exist in Artifact Registry.  If it does not, falls back to
+        scanning cloud build across all known regions.
 
         Is a no-op if ``cfg.is_async`` is False.
 
@@ -334,37 +334,47 @@ options:
             ValueError: If the async build fails.
         """
         cfg: CloudBuildBundler.Config = self.config
-        wait_timeout = wait_timeout or cfg.timeout_seconds
+        # only verify image or cloud build under async mode
+        if not cfg.is_async:
+            return
+
+        # if cloud build is skipped, first look for the image from registry,
+        # fast pass if the image already exists, and fallback to regular
+        # cloud build check if the image does not exist.
         if cfg.skip_bundle:
             image_id = name if parse_tag_from_image_id(name) else self.id(name)
             logging.info("skip_bundle=True: verifying image exists in registry: %s", image_id)
-            if not _image_exists_in_artifact_registry(image_id):
-                raise RuntimeError(
-                    f"skip_bundle=True but image does not exist in Artifact Registry: {image_id}"
-                )
-            return
-        if cfg.is_async:
-            region = None
-            if cfg.private_worker_pool:
-                region = _region_from_worker_pool(cfg.private_worker_pool)
-                if region:
-                    logging.info("Using region '%s' from private_worker_pool config.", region)
-            if tag := parse_tag_from_image_id(name):
-                wait_for_cloud_build(
-                    project_id=cfg.project,
-                    image_id=name,
-                    tags=[tag],
-                    wait_timeout=wait_timeout,
-                    region=region,
-                )
-            else:
-                wait_for_cloud_build(
-                    project_id=cfg.project,
-                    image_id=self.id(name),
-                    tags=[name],
-                    wait_timeout=wait_timeout,
-                    region=region,
-                )
+            if _image_exists_in_artifact_registry(image_id):
+                return
+            logging.warning(
+                "skip_bundle=True but image not found in Artifact Registry: %s; "
+                "falling back to scanning cloud build.",
+                image_id,
+            )
+
+        wait_timeout = wait_timeout or cfg.timeout_seconds
+        region = None
+        # if worker pool configured, directly check the cloud build from the worker pool
+        if cfg.private_worker_pool:
+            region = _region_from_worker_pool(cfg.private_worker_pool)
+            if region:
+                logging.info("Using region '%s' from private_worker_pool config.", region)
+        if tag := parse_tag_from_image_id(name):
+            wait_for_cloud_build(
+                project_id=cfg.project,
+                image_id=name,
+                tags=[tag],
+                wait_timeout=wait_timeout,
+                region=region,
+            )
+        else:
+            wait_for_cloud_build(
+                project_id=cfg.project,
+                image_id=self.id(name),
+                tags=[name],
+                wait_timeout=wait_timeout,
+                region=region,
+            )
 
 
 @register_bundler
