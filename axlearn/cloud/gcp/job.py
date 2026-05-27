@@ -5,7 +5,6 @@
 See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
-import enum
 import logging
 import shlex
 import subprocess
@@ -33,23 +32,6 @@ from axlearn.cloud.gcp.utils import (
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
-
-
-class _ServiceProtocol(enum.Enum):
-    """https://kubernetes.io/docs/reference/networking/service-protocols/"""
-
-    TCP = "TCP"
-    UDP = "UDP"
-    SCTP = "SCTP"
-
-
-class _ServiceType(enum.Enum):
-    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services sss"""
-
-    CLUSTER_IP = "ClusterIP"
-    NODE_PORT = "NodePort"
-    LOAD_BALANCER = "LoadBalancer"
-    EXTERNAL_NAME = "ExternalName"
 
 
 class GCPJob(Job):
@@ -402,11 +384,6 @@ class GKELeaderWorkerSet(GCPJob):
         labels: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
         enable_service: bool = False
-        ports: list[str] = None
-        targetports: list[str] = None
-        service_type: str = None
-        protocol_list: list[str] = None
-        port_names: list[str] = None
         service: Optional[LWSService.Config] = None
         gke_gateway_route: bool = False
         http_route: Optional[LWSHTTPRoute.Config] = None
@@ -428,11 +405,6 @@ class GKELeaderWorkerSet(GCPJob):
             fv.set_default("enable_service", True)
         else:
             fv.set_default("enable_service", fv.enable_service or False)
-        fv.set_default("targetports", fv.targetports or ["9090"])
-        fv.set_default("ports", fv.ports or ["9090"])
-        fv.set_default("protocol_list", fv.protocol_list or [_ServiceProtocol.TCP.value])
-        fv.set_default("port_names", fv.port_names or ["tcp-port"])
-        fv.set_default("service_type", fv.service_type or _ServiceType.CLUSTER_IP.value)
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -443,42 +415,6 @@ class GKELeaderWorkerSet(GCPJob):
             "enable_service",
             False,
             "Whether to enable creation of service for LWS",
-            **common_kwargs,
-        )
-        ##### https://cloud.google.com/kubernetes-engine/docs/how-to/exposing-apps ####
-        ## Available types: ClusterIP(default), NodePort, LoadBalancer, ExternalName, Headless ##
-        flags.DEFINE_enum(
-            "service_type",
-            None,
-            [v.value for v in _ServiceType],
-            help="Service type for LWS",
-            flag_values=fv,
-        )
-        flags.DEFINE_list(
-            "ports",
-            [],
-            "External ports where application is exposed through service",
-            **common_kwargs,
-        )
-
-        flags.DEFINE_list(
-            "targetports",
-            [],
-            " Application port which the service redirects to",
-            **common_kwargs,
-        )
-        flags.DEFINE_list(
-            "port_names",
-            [],
-            " Port Names which map the port and targetport in service",
-            **common_kwargs,
-        )
-        #### https://kubernetes.io/docs/reference/networking/service-protocols/ #####
-        #### Available types: TCP, UDP, SCTP #####
-        flags.DEFINE_list(
-            "protocol_list",
-            [],
-            "Protocol list needed for different port and targetport combinations",
             **common_kwargs,
         )
         # TODO: Avoid same flag twice
@@ -507,11 +443,6 @@ class GKELeaderWorkerSet(GCPJob):
         cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
         cfg.num_replicas = fv.num_replicas
         cfg.enable_service = fv.enable_service
-        cfg.ports = fv.ports
-        cfg.targetports = fv.targetports
-        cfg.protocol_list = fv.protocol_list
-        cfg.port_names = fv.port_names
-        cfg.service_type = fv.service_type
         cfg.gke_gateway_route = fv.gke_gateway_route
         cfg.enable_telemetry = fv.enable_telemetry
         return cfg

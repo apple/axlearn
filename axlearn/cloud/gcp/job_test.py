@@ -12,7 +12,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import define_flags, from_flags
-from axlearn.cloud.gcp import bundler, job, jobset_utils, pathways_utils
+from axlearn.cloud.gcp import bundler, job, jobset_utils, k8s_service, pathways_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -561,6 +561,31 @@ class TPUGKELeaderWorkerSetTest(TestCase):
             for key, value in labels.items():
                 self.assertIn(key, lws_labels)
                 self.assertEqual(lws_labels[key], value)
+
+    def test_service_defaults_propagate_to_lws_service(self):
+        """Guards the effective defaults LWSService receives when nested under GKELeaderWorkerSet.
+
+        These defaults (ports=["9090"], port_names=["tcp-port"]) were historically owned by
+        GKELeaderWorkerSet's set_defaults via the `or`-fallback ordering (parent runs first).
+        After deduplicating into LWSService, they must continue to apply when neither flag is
+        set on the command line.
+        """
+        fv = flags.FlagValues()
+        cfg = job.GKELeaderWorkerSet.default_config().set(
+            builder=pathways_utils.PathwaysLeaderWorkerTemplate.default_config(),
+            service=k8s_service.LWSService.default_config(),
+        )
+        define_flags(cfg, fv)
+        fv.name = "fake-name"
+        fv.output_dir = "FAKE"
+        fv.instance_type = "tpu-v4-8"
+        fv.mark_as_parsed()
+        from_flags(cfg, fv, command="test-command")
+
+        self.assertEqual(cfg.service.ports, ["9090"])
+        self.assertEqual(cfg.service.port_names, ["tcp-port"])
+        self.assertEqual(cfg.service.protocol_list, ["TCP"])
+        self.assertEqual(cfg.service.service_type, "ClusterIP")
 
     def test_builder_name_propagated_on_role_override(self):
         """Test that overriding cfg.name after from_flags propagates to builder and builder.inner.

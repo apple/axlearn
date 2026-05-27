@@ -1,6 +1,7 @@
 """k8s service module."""
 
 import copy
+import enum
 import logging
 from typing import Any, Optional
 
@@ -13,6 +14,23 @@ from axlearn.cloud.gcp.pathways_utils import NOTARY_PROXY_GRPC_PORT, NOTARY_PROX
 from axlearn.cloud.gcp.utils import custom_leaderworkerset_kwargs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
+
+
+class _ServiceProtocol(enum.Enum):
+    """https://kubernetes.io/docs/reference/networking/service-protocols/"""
+
+    TCP = "TCP"
+    UDP = "UDP"
+    SCTP = "SCTP"
+
+
+class _ServiceType(enum.Enum):
+    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services"""
+
+    CLUSTER_IP = "ClusterIP"
+    NODE_PORT = "NodePort"
+    LOAD_BALANCER = "LoadBalancer"
+    EXTERNAL_NAME = "ExternalName"
 
 
 class Service(FlagConfigurable):
@@ -82,9 +100,17 @@ class LWSService(Service):
         flags.DEFINE_string("name", None, "Name of the service.", **common_kwargs)
         flags.DEFINE_string("namespace", None, "Namespace of the service.", **common_kwargs)
         flags.DEFINE_list("protocol_list", [], "list of Protocols of the service.", **common_kwargs)
-        flags.DEFINE_string("service_type", None, "Type of the service.", **common_kwargs)
+        flags.DEFINE_enum(
+            "service_type",
+            None,
+            [v.value for v in _ServiceType],
+            "Type of the service.",
+            **common_kwargs,
+        )
         flags.DEFINE_list("ports", [], "Ports of the service.", **common_kwargs)
         flags.DEFINE_list("target_ports", [], "Target Ports of the service.", **common_kwargs)
+        # Back-compat alias for the legacy GKELeaderWorkerSet `--targetports` flag.
+        flags.DEFINE_alias("targetports", "target_ports", flag_values=fv)
         flags.DEFINE_list(
             "port_names",
             [],
@@ -96,11 +122,11 @@ class LWSService(Service):
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         fv.set_default("namespace", fv.namespace or "default")
-        fv.set_default("protocol_list", fv.protocol_list or ["TCP"])
-        fv.set_default("service_type", fv.service_type or "ClusterIP")
-        fv.set_default("ports", fv.ports or ["9000"])
+        fv.set_default("protocol_list", fv.protocol_list or [_ServiceProtocol.TCP.value])
+        fv.set_default("service_type", fv.service_type or _ServiceType.CLUSTER_IP.value)
+        fv.set_default("ports", fv.ports or ["9090"])
         fv.set_default("target_ports", fv.target_ports or ["9000"])
-        fv.set_default("port_names", fv.port_names or ["tcp_port"])
+        fv.set_default("port_names", fv.port_names or ["tcp-port"])
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
