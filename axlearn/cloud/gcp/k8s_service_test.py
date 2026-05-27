@@ -157,6 +157,27 @@ class GKELWSService(TestCase):
             self.assertIsNotNone(http_port)
             self.assertIsNone(getattr(http_port, "app_protocol", None))
 
+    def test_default_values(self):
+        """Pins LWSService's standalone defaults so callers can rely on them."""
+        cfg = self._service_config(command="test-command", project="fake-project")
+        self.assertEqual(cfg.ports, ["9090"])
+        self.assertEqual(cfg.target_ports, ["9000"])
+        self.assertEqual(cfg.port_names, ["tcp-port"])
+        self.assertEqual(cfg.protocol_list, ["TCP"])
+        self.assertEqual(cfg.service_type, "ClusterIP")
+
+    def test_targetports_alias(self):
+        """`--targetports` is a back-compat alias for `--target_ports`."""
+        cfg = self._service_config(
+            command="test-command",
+            project="fake-project",
+            ports=["8080", "9000"],
+            targetports=["8080", "9000"],  # legacy flag name
+            protocol_list=["TCP", "TCP"],
+            port_names=["http", "grpc"],
+        )
+        self.assertEqual(cfg.target_ports, ["8080", "9000"])
+
 
 if __name__ == "__main__":
     absltest.main()
