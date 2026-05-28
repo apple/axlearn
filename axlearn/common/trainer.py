@@ -1466,15 +1466,22 @@ def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
     if mem_stats is not None:
         analysis_results += "======= Memory Analysis ==================================\n"
         try:
+            # XLA may alias output buffers onto input buffers when
+            # ``donate_argnums`` is used (typical for jit'ed training steps);
+            # subtract the aliased bytes so the reported total reflects the
+            # actual peak HBM, not the double-counted argument + output sum.
+            aliased_bytes = mem_stats.alias_size_in_bytes
             total_hbm = (
                 mem_stats.argument_size_in_bytes
                 + mem_stats.output_size_in_bytes
+                - aliased_bytes
                 + mem_stats.temp_size_in_bytes
                 + mem_stats.generated_code_size_in_bytes
             )
             analysis_results += (
                 f"Input memory: {mb_or_gb(mem_stats.argument_size_in_bytes)}\n"
                 + f"Output memory: {mb_or_gb(mem_stats.output_size_in_bytes)}\n"
+                + f"Aliased input/output memory: {mb_or_gb(aliased_bytes)}\n"
                 + f"Temp memory: {mb_or_gb(mem_stats.temp_size_in_bytes)}\n"
                 + f"Code memory: {mb_or_gb(mem_stats.generated_code_size_in_bytes)}\n"
                 + f"Total HBM memory: {mb_or_gb(total_hbm)}\n"
