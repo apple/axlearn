@@ -98,7 +98,10 @@ def scatter_update_pages_kernel(
     """
     key_positions = key_positions.squeeze(1)
     mesh = get_current_abstract_or_physical_mesh()
-    model_axis = "model" if "model" in mesh.axis_names else None
+    num_kv_heads = kv_pages.shape[0]
+    model_axis = (
+        "model" if "model" in mesh.axis_names and num_kv_heads % mesh.shape["model"] == 0 else None
+    )
     # pylint: disable-next=too-many-function-args
     return jax.shard_map(
         shmap_fn,

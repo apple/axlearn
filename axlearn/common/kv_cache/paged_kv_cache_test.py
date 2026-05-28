@@ -66,6 +66,49 @@ class ScatterUpdatePagesTest(TestCase):
             )
             self.assertNestedAllClose(out, ref)
 
+    @parameterized.product(fn=test_fns)
+    def test_scatter_update_indivisible_kv_heads(self, fn):
+        """Kernel must work when num_kv_heads is not divisible by the model axis size.
+
+        This exercises the GQA case (e.g. 1 KV head on 2-way model parallel) where
+        the old code unconditionally sharded kv_pages along the model axis, causing
+        a shape mismatch. The fix replaces model-axis sharding with replication.
+
+        Run with XLA_FLAGS=--xla_force_host_platform_device_count=2 on single-device machines.
+        """
+        if jax.device_count() < 2:
+            self.skipTest(
+                "Requires 2+ devices; set XLA_FLAGS=--xla_force_host_platform_device_count=2"
+            )
+
+        k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 3)
+        num_heads = 1  # not divisible by model axis size 2
+        head_dim = 128
+        batch_size = 4
+        page_size = 16
+        pages_per_seq = 8
+        num_pages = pages_per_seq * batch_size + 5
+
+        dtype = jnp.bfloat16
+        kv_pages = jnp.zeros((num_heads, num_pages, page_size, head_dim), dtype=dtype)
+        kv_proj = jax.random.normal(k2, (num_heads, batch_size, 1, head_dim), dtype=dtype)
+        page_indices = jax.random.choice(
+            k3, jnp.arange(1, num_pages), shape=(batch_size, pages_per_seq), replace=False
+        )
+        key_positions = jax.random.choice(
+            k4, jnp.arange(0, pages_per_seq * page_size), shape=(batch_size, 1), replace=True
+        )
+
+        with jax.make_mesh((2,), ("model",), devices=jax.devices()[0:2]):
+            ref = scatter_update_pages(kv_pages, kv_proj, page_indices, key_positions)
+            out = jax.jit(partial(scatter_update_pages_kernel, shmap_fn=fn))(
+                kv_pages=kv_pages.copy(),
+                kv_proj=kv_proj,
+                page_indices=page_indices,
+                key_positions=key_positions,
+            )
+            self.assertNestedAllClose(out, ref)
+
 
 class PagedKVCacheTest(TestCase):
     @parameterized.product(
