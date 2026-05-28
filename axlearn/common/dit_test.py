@@ -600,6 +600,73 @@ class TestDiTBlock(parameterized.TestCase):
         )
         assert_allclose(layer_output, golden["outputs"]["ref"])
 
+    def test_dit_block_segment_ids(self):
+        """Verifies `target_segment_ids` makes self-attention segment-aware.
+
+        Two segments packed in one slot (`[1,1,1,2,2,2]`) must produce the same
+        outputs on segment 2's positions as running segment 2 alone — proving the
+        attention mask blocks cross-segment attention.
+        """
+        batch_size = 1
+        seg_len = 3
+        dim = 32
+        num_heads = 2
+        prng_key = jax.random.PRNGKey(0)
+
+        layer_cfg = DiTBlock.default_config().set(name="test", input_dim=dim)
+        layer_cfg.attention.attention.num_heads = num_heads
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=prng_key)
+
+        prng_key, key1, key2 = jax.random.split(prng_key, 3)
+        seg1 = jax.random.normal(key1, shape=(batch_size, seg_len, dim))
+        seg2 = jax.random.normal(key2, shape=(batch_size, seg_len, dim))
+        condition = jax.random.normal(prng_key, shape=(batch_size, dim))
+
+        # Packed: two segments concatenated, segment_ids marks the boundary.
+        packed_input = jnp.concatenate([seg1, seg2], axis=1)
+        packed_segment_ids = jnp.array(
+            [[1] * seg_len + [2] * seg_len] * batch_size, dtype=jnp.int32
+        )
+        packed_out, _ = F(
+            layer,
+            inputs=dict(
+                input=packed_input,
+                condition=condition,
+                segment_ids=packed_segment_ids,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+
+        # Reference: run seg2 alone — segment-aware attention should yield identical
+        # outputs on positions 3-5 since seg2 cannot see seg1.
+        seg2_segment_ids = jnp.ones((batch_size, seg_len), dtype=jnp.int32)
+        seg2_out, _ = F(
+            layer,
+            inputs=dict(
+                input=seg2,
+                condition=condition,
+                segment_ids=seg2_segment_ids,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+
+        assert_allclose(packed_out[:, seg_len:], seg2_out)
+
+        # Sanity: without segment_ids, packed seg2 positions DO see seg1 → output differs.
+        packed_unsegmented_out, _ = F(
+            layer,
+            inputs=dict(input=packed_input, condition=condition),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+        self.assertFalse(jnp.allclose(packed_unsegmented_out[:, seg_len:], seg2_out))
+
     @parameterized.product(
         causal_type=["causal", "sliding_window"],
         seq_cond=[False, True],

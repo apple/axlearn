@@ -581,14 +581,21 @@ class DiTBlock(BaseLayer):
         self._add_child("feed_forward", cfg.feed_forward.set(input_dim=cfg.input_dim))
         self._add_child("adaln", cfg.adaln.set(dim=cfg.input_dim))
 
-    # pylint: disable-next=redefined-builtin
-    def forward(self, *, input: Tensor, condition: Tensor) -> Tensor:
+    def forward(
+        self,
+        *,
+        input: Tensor,  # pylint: disable=redefined-builtin
+        condition: Tensor,
+        segment_ids: Optional[Tensor] = None,
+    ) -> Tensor:
         """The forward function of DiTBlock.
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
             condition: tensor with shape [batch_size, input_dim] or [batch_size, num_length,
                 input_dim] for generating layer norm shift, scale, and gate.
+            segment_ids: Optional int Tensor of shape [batch_size, num_length] used as
+                self-attention segment_ids. See ``On segment_ids`` in `attention.py`.
 
         Returns:
             A tensor with shape [batch_size, num_length, input_dim].
@@ -596,7 +603,13 @@ class DiTBlock(BaseLayer):
         layer_norm_params = self.adaln(condition)
         shift_attn, scale_attn, gate_attn = layer_norm_params[0:3]
         shift_ffn, scale_ffn, gate_ffn = layer_norm_params[3:6]
-        x = self.attention(input=input, shift=shift_attn, scale=scale_attn, gate=gate_attn)
+        x = self.attention(
+            input=input,
+            shift=shift_attn,
+            scale=scale_attn,
+            gate=gate_attn,
+            segment_ids=segment_ids,
+        )
         x = self.feed_forward(input=x, shift=shift_ffn, scale=scale_ffn, gate=gate_ffn)
 
         return x
