@@ -599,7 +599,8 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertEqual(next(restored_state["input_iter"]), 3)
             ckpt.stop()
 
-    def test_python_savable(self):
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    def test_python_savable(self, checkpointer_cls):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
@@ -623,8 +624,8 @@ class CheckpointerTest(test_utils.TestCase):
                     yield i
 
         with _mesh(mesh_shape):
-            cfg = _checkpointer_config(Checkpointer)
-            ckpt: Checkpointer = cfg.instantiate(parent=None)
+            cfg = _checkpointer_config(checkpointer_cls)
+            ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
 
             x = _DummySavable(max_step=3)
             # Check that runtime_checks is enabled.
@@ -639,10 +640,11 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.wait_until_finished()
 
             # Check that input iterators are saved under a per-worker path.
-            # E.g., /path/to/<step>/[state/]python_0/x.
+            # For Checkpointer: /path/to/<step>/python_0/x.
+            # For OrbaxCheckpointer: /path/to/<step>/python/python_0/x.
             state_dir = ckpt.ckpt_dir(1)
-            if "state" in os.listdir(state_dir):
-                state_dir = os.path.join(state_dir, "state")
+            if "python" in os.listdir(state_dir):
+                state_dir = os.path.join(state_dir, "python")
             self.assertIn("python_0", os.listdir(state_dir))
             self.assertIn("x", os.listdir(os.path.join(state_dir, "python_0")))
 

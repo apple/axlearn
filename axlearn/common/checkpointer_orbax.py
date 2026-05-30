@@ -170,84 +170,89 @@ ocp.type_handlers.register_type_handler(
 )
 
 
-if _GRAIN_INSTALLED:
-    # TODO(markblee): Generalize to PythonSavableHandler.
-    class _GrainDatasetIteratorHandler(ocp.type_handlers.TypeHandler):
-        """Serializes grain dataset iterators."""
+class _PythonSavableHandler(ocp.type_handlers.TypeHandler):
+    """Serializes PythonSavable objects (e.g. grain dataset iterators)."""
 
-        def __init__(self):
-            super().__init__()
-            self._executor = futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="GrainDatasetIteratorHandler"
+    def __init__(self):
+        super().__init__()
+        self._executor = futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="PythonSavableHandler"
+        )
+
+    @dataclasses.dataclass
+    class RestoreArgs(ocp.type_handlers.RestoreArgs):
+        item: Optional[PythonSavable] = None
+
+    def typestr(self) -> str:
+        return "PythonSavable"
+
+    def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
+        # Each worker writes its checkpoints under a different path.
+        return os.path.join(
+            os.path.dirname(info.parent_dir),
+            "python",
+            f"python_{jax.process_index()}",
+        )
+
+    async def serialize(
+        self,
+        values: Sequence[PythonSavable],
+        infos: Sequence[ocp.type_handlers.ParamInfo],
+        args: Optional[Sequence[ocp.args.PyTreeSave]],
+    ) -> List[futures.Future]:
+        """Serializes `values` into corresponding `info.path`s."""
+        del args  # Unused.
+        futs = []
+        for value, info in zip(values, infos, strict=False):
+            futs.append(
+                self._executor.submit(
+                    maybe_save_python_savables,
+                    {info.name: value},
+                    dir=self._ckpt_dir(info),
+                )
             )
 
-        @dataclasses.dataclass
-        class RestoreArgs(ocp.type_handlers.RestoreArgs):
-            item: Optional[_GrainIterator] = None
+        return futs
 
-        def typestr(self) -> str:
-            return "DatasetIterator"
+    async def deserialize(
+        self,
+        infos: Sequence[ocp.type_handlers.ParamInfo],
+        args: Optional[Sequence[RestoreArgs]] = None,
+    ) -> Sequence[PythonSavable]:
+        if args is None:
+            raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
 
-        def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
-            # Each worker writes its grain checkpoints under a different path.
-            return os.path.join(
-                os.path.dirname(info.parent_dir),
-                "python",
-                f"python_{jax.process_index()}",
-            )
-
-        async def serialize(
-            self,
-            values: Sequence[grain.DatasetIterator],
-            infos: Sequence[ocp.type_handlers.ParamInfo],
-            args: Optional[Sequence[ocp.args.PyTreeSave]],
-        ) -> List[futures.Future]:
-            """Serializes `values` into corresponding `info.path`s."""
-            del args  # Unused.
-            futs = []
-            for value, info in zip(values, infos, strict=False):
-                futs.append(
-                    self._executor.submit(
-                        maybe_save_python_savables,
-                        {info.name: value},
+        await asyncio.gather(
+            *(
+                asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    functools.partial(
+                        maybe_restore_python_savables,
+                        {info.name: arg.item},
                         dir=self._ckpt_dir(info),
-                    )
+                    ),
                 )
-
-            return futs
-
-        async def deserialize(
-            self,
-            infos: Sequence[ocp.type_handlers.ParamInfo],
-            args: Optional[Sequence[RestoreArgs]] = None,
-        ) -> Sequence[_GrainIterator]:
-            if args is None:
-                raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-
-            await asyncio.gather(
-                *(
-                    asyncio.get_event_loop().run_in_executor(
-                        self._executor,
-                        functools.partial(
-                            maybe_restore_python_savables,
-                            {info.name: arg.item},
-                            dir=self._ckpt_dir(info),
-                        ),
-                    )
-                    for arg, info in zip(args, infos, strict=False)
-                )
+                for arg, info in zip(args, infos, strict=False)
             )
+        )
 
-            return [arg.item for arg in args]
+        return [arg.item for arg in args]
 
-        async def metadata(
-            self, infos: Sequence[ocp.type_handlers.ParamInfo]
-        ) -> Sequence[ocp.metadata.Metadata]:
-            return [ocp.metadata.Metadata(name=info.name, directory=info.path) for info in infos]
+    async def metadata(
+        self, infos: Sequence[ocp.type_handlers.ParamInfo]
+    ) -> Sequence[ocp.metadata.Metadata]:
+        return [ocp.metadata.Metadata(name=info.name, directory=info.path) for info in infos]
 
-    ocp.type_handlers.register_type_handler(
-        grain.DatasetIterator, _GrainDatasetIteratorHandler(), override=True
-    )
+
+# NOTE: This relies on a strong assumption that grain's `DatasetIterator` is
+# structurally compatible with the `PythonSavable` Protocol (defined in
+# `axlearn/common/checkpointer.py` — must implement `get_state` / `set_state`).
+# If grain's upstream interface ever changes and breaks this assumption, the
+# orbax type registry will raise here:
+# pylint: disable=line-too-long
+# https://github.com/google/orbax/blob/887829f482b3e622ca16b7348c71b704dfaf1639/checkpoint/orbax/checkpoint/_src/handlers/handler_type_registry.py#L89-L91
+# pylint: enable=line-too-long
+ocp.type_handlers.register_type_handler(PythonSavable, _PythonSavableHandler(), override=True)
 
 
 class _CheckpointManagerWithTrackerFile(ocp.CheckpointManager):
@@ -568,7 +573,9 @@ class OrbaxCheckpointer(BaseCheckpointer):
             elif isinstance(x, tf.data.Iterator):
                 return _TfIteratorHandler.RestoreArgs(item=x)
             elif _GRAIN_INSTALLED and isinstance(x, _GrainIterator):
-                return _GrainDatasetIteratorHandler.RestoreArgs(item=x)
+                return _PythonSavableHandler.RestoreArgs(item=x)
+            elif isinstance(x, PythonSavable):
+                return _PythonSavableHandler.RestoreArgs(item=x)
             else:
                 return None
 
