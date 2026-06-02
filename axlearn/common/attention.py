@@ -3937,6 +3937,28 @@ class BaseStackedTransformerLayer(BaseTransformerLayer):
         # The layer must be a subclass of BaseTransformerLayer.
         layer: BaseTransformerLayer.Config = TransformerLayer.default_config()
         peak_stochastic_depth_rate: Optional[float] = None
+        # The additional fields of BaseTransformerLayer.Output that should propagate as input to
+        # the next layer.
+        #
+        # For example, carry=("data", "self_attention_kv_state") means that both `data` and
+        # `self_attention_kv_state` will propagate between layers.
+        #
+        # If None, only "data" is propagated (default behavior).
+        carry: Optional[Sequence[str]] = None
+        # Keys of layer_kwargs that should be scanned per layer along the leading axis.
+        #
+        # For each key listed here, the corresponding value in layer_kwargs is expected to have a
+        # leading dimension of size num_layers, and the i-th slice along that axis is passed to the
+        # i-th layer. This is the mechanism for supplying per-layer inputs (e.g. layer-specific
+        # masks, biases, or auxiliary tensors) without constructing a separate kwargs dict per
+        # layer.
+        #
+        # For example, scan_kwargs=("layer_mask",) means that layer_kwargs["layer_mask"] must have
+        # shape [num_layers, ...], and the i-th layer receives layer_mask[i]. A value of None for a
+        # listed key is passed through unchanged (i.e. None is forwarded to every layer).
+        #
+        # If None, no layer_kwargs are sliced (default behavior).
+        scan_kwargs: Optional[Sequence[str]] = None
 
 
 class UpdateDataFn(Protocol):
@@ -4066,6 +4088,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         all_layer_outputs = []
         all_layer_states = []
         external_self_attention_kv_state = layer_kwargs.get("self_attention_kv_state")
+        original_layer_kwargs = {**layer_kwargs}
 
         for i, layer in enumerate(self._layers):
             # Prepare inputs to the current layer.
@@ -4076,6 +4099,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
                 layer_kwargs,
                 all_layer_outputs=all_layer_outputs,
                 external_self_attention_kv_state=external_self_attention_kv_state,
+                original_layer_kwargs=original_layer_kwargs,
             )
 
             if mode == ForwardMode.FORWARD:
@@ -4123,6 +4147,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         *,
         all_layer_outputs: list[BaseTransformerLayer.Output],
         external_self_attention_kv_state: Optional[KVState] = None,
+        original_layer_kwargs: Optional[dict[str, Any]] = None,
     ):
         """Updates `layer_kwargs` using other args.
 
@@ -4135,8 +4160,25 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
                 the output of each constituent layer in the stack.
             external_self_attention_kv_state: A KVState that this function processes
                 to populate (if needed) the self_attention_kv_state within `layer_kwargs`.
+            original_layer_kwargs: The original layer_kwargs before any per-layer modifications.
         """
-        pass  # Do nothing by default.
+        del external_self_attention_kv_state
+        cfg = self.config
+        layer_idx = len(all_layer_outputs)
+
+        # Propagate carry fields from previous layer's output.
+        if cfg.carry is not None and all_layer_outputs:
+            prev_output = all_layer_outputs[-1]
+            for k in cfg.carry:
+                if k == "data":
+                    continue
+                layer_kwargs[k] = getattr(prev_output, k)
+
+        # Slice scan fields for this layer.
+        if cfg.scan_kwargs is not None and original_layer_kwargs is not None:
+            for k in cfg.scan_kwargs:
+                if k in original_layer_kwargs and original_layer_kwargs[k] is not None:
+                    layer_kwargs[k] = original_layer_kwargs[k][layer_idx]
 
     def _aggregate_layer_outputs(
         self,
@@ -4185,25 +4227,14 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 class _TransformerRepeat(Repeat):
     """A Repeat layer with layer=TransformerLayer."""
 
-    @config_class
-    class Config(Repeat.Config):
-        """Configures _TransformerRepeat."""
-
-        # The additional fields of BaseTransformerLayer.Output that should propagate as input to
-        # the next layer.
-        #
-        # For example, carry=("data", "self_attention_kv_state") means that both `data` and
-        # `self_attention_kv_state` will propagate between layers.
-        #
-        # If None, only "data" is propagated.
-        carry: Optional[Sequence[str]] = None
-
     def _forward_for_mode(
         self,
         *,
         mode: ForwardMode,
         data: Tensor,
         cached_states: Optional[Nested[Tensor]] = None,
+        carry: Optional[Sequence[str]] = None,
+        scan_kwargs: Optional[Sequence[str]] = None,
         **layer_kwargs,
     ) -> tuple[Optional[Nested[Tensor]], Optional[TransformerLayer.Output]]:
         """Computes transformer stack outputs.
@@ -4223,24 +4254,24 @@ class _TransformerRepeat(Repeat):
         Raises:
             ValueError: If `mode` is unsupported.
         """
-        cfg: _TransformerRepeat.Config = self.config
+        cfg = self.config
 
         if cached_states is not None:
             for path, value in flatten_items(cached_states):
                 assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
 
         def layer_fn(carry, x_i):
-            x_i, page_pool = x_i
+            cached_states = x_i.pop("cached_states")
             if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
+                layer_states, layer_outputs = None, self.layer(**carry, **x_i, **layer_kwargs)
             elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
-                assert x_i is not None
+                assert cached_states is not None
                 layer_states, layer_outputs = self.layer.extend_step(
-                    cached_states=x_i,
+                    cached_states=cached_states,
                     is_prefill=(mode == ForwardMode.PREFILL),
                     **carry,
+                    **x_i,
                     **layer_kwargs,
-                    page_pool=page_pool,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -4250,28 +4281,27 @@ class _TransformerRepeat(Repeat):
                 ys["cached_states"] = layer_states
 
             ys.update({k: v for k, v in layer_outputs._asdict().items() if k not in carry})
-            ys["page_pool"] = page_pool
             return {k: getattr(layer_outputs, k) for k in carry}, ys
 
-        if cfg.carry is None:
-            carry = {"data": data}
+        if carry is None:
+            carry_in = {"data": data}
         else:
             layer_kwargs["data"] = data
-            carry = {k: layer_kwargs.pop(k) for k in cfg.carry}
+            carry_in = {k: layer_kwargs.pop(k) for k in carry}
 
-        page_pool = layer_kwargs.pop("page_pool", None)
-        repeat_outputs: Repeat.Output = self._run(
-            layer_fn, carry=carry, xs=(cached_states, page_pool)
-        )
-        carry = repeat_outputs.carry
+        xs = dict(cached_states=cached_states)
+        if "page_pool" in layer_kwargs and layer_kwargs["page_pool"] is not None:
+            raise NotImplementedError("Repeated transformer does not support page_pool.")
+        if scan_kwargs is not None:
+            for k in scan_kwargs:
+                xs[k] = layer_kwargs.pop(k, None)
+        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry_in, xs=xs)
+        carry_out = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
-        out_page_pool = ys.pop("page_pool", None)
-        if page_pool is not None and out_page_pool is not None:
-            page_pool[:] = out_page_pool  # type: ignore
 
         for k in ("data", "self_attention_kv_state"):
-            if k in carry:
+            if k in carry_in:
                 continue
             v = ys.pop(k, None)
             if v is not None:
@@ -4282,18 +4312,23 @@ class _TransformerRepeat(Repeat):
                     )
                 else:
                     v = v[-1]
-            carry[k] = v
-        return updated_states, TransformerLayer.Output(**carry, **ys)
+            carry_out[k] = v
+        return updated_states, TransformerLayer.Output(**carry_out, **ys)
 
     def forward(
         self,
         data: Tensor,
+        *,
+        carry: Optional[Sequence[str]] = None,
+        scan_kwargs: Optional[Sequence[str]] = None,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
             cached_states=None,
+            carry=carry,
+            scan_kwargs=scan_kwargs,
             **layer_kwargs,
         )
         return output
@@ -4323,6 +4358,8 @@ class _TransformerRepeat(Repeat):
         data: Tensor,
         *,
         is_prefill: bool = False,
+        carry: Optional[Sequence[str]] = None,
+        scan_kwargs: Optional[Sequence[str]] = None,
         **layer_kwargs,
     ) -> tuple[NestedTensor, TransformerLayer.Output]:
         mode = ForwardMode.PREFILL if is_prefill else ForwardMode.EXTEND_STEP
@@ -4330,6 +4367,8 @@ class _TransformerRepeat(Repeat):
             mode=mode,
             data=data,
             cached_states=cached_states,
+            carry=carry,
+            scan_kwargs=scan_kwargs,
             **layer_kwargs,
         )
 
@@ -4340,13 +4379,16 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
     Compared with StackedTransformerLayer, the size of the XLA program for RepeatedTransformerLayer
     does not grow proportional to the number of layers. In practice, this significantly reduces
     XLA compilation overhead of large models with many layers.
+
+    Not recommended for inference since `jax.lax.scan` temporarily duplicates the KV cache instead
+    of updating in-place.
     """
 
     @config_class
     class Config(BaseStackedTransformerLayer.Config):
         """Configures RepeatedTransformerLayer."""
 
-        repeat: Repeat.Config = _TransformerRepeat.default_config()
+        repeat: _TransformerRepeat.Config = _TransformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -4373,7 +4415,8 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
-        return self.repeat(data, **layer_kwargs)
+        cfg = self.config
+        return self.repeat(data, carry=cfg.carry, scan_kwargs=cfg.scan_kwargs, **layer_kwargs)
 
     @nowrap
     def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> Nested[Tensor]:
@@ -4398,10 +4441,13 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         is_prefill: bool = False,
         **layer_kwargs,
     ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
+        cfg = self.config
         repeat_cached_states, output = self.repeat.extend_step(
             cached_states=cached_states["repeat"],
             data=data,
             is_prefill=is_prefill,
+            carry=cfg.carry,
+            scan_kwargs=cfg.scan_kwargs,
             **layer_kwargs,
         )
         return VDict(repeat=repeat_cached_states), output
@@ -4462,6 +4508,15 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config  # type: PipelinedTransformerLayer.Config
+        if cfg.carry is not None:
+            raise NotImplementedError(
+                f"cfg.carry is not yet implemented for {type(self).__name__}, got {cfg.carry}"
+            )
+        if cfg.scan_kwargs is not None:
+            raise NotImplementedError(
+                f"cfg.scan_kwargs is not yet implemented for {type(self).__name__}, "
+                f"got {cfg.scan_kwargs}"
+            )
         if cfg.num_layers % cfg.num_stages != 0:
             raise ValueError(f"num_stages {cfg.num_stages} must divide num_layers {cfg.num_layers}")
         num_layers_per_stage = cfg.num_layers // cfg.num_stages
