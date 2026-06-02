@@ -131,6 +131,7 @@ from axlearn.common.test_utils import (
     assert_allclose,
     dummy_segments_positions,
     is_supported_mesh_shape,
+    prng_impl,
     set_threefry_partitionable,
 )
 from axlearn.common.utils import (
@@ -4595,8 +4596,9 @@ class _StackedTransformerLayerWithKVState(NonUniformStack):
         *,
         all_layer_outputs: list[BaseTransformerLayer.Output],
         external_self_attention_kv_state: Optional[KVState] = None,
+        original_layer_kwargs: Optional[dict[str, Any]] = None,
     ):
-        del external_self_attention_kv_state
+        del external_self_attention_kv_state, original_layer_kwargs
 
         layer_index = len(all_layer_outputs)
         if layer_index == 1:
@@ -4628,6 +4630,8 @@ class StackedTransformerTest(BaseTransformerTest):
         dtype,
         remat_spec,
         output_self_attention_kv_state=False,
+        carry=None,
+        scan_kwargs=None,
     ) -> _StackModel.Config:
         if isinstance(stack_cfg, type):
             stack_cfg = stack_cfg.default_config()
@@ -4641,6 +4645,8 @@ class StackedTransformerTest(BaseTransformerTest):
                 vlog=5,
                 dtype=dtype,
                 layer=TransformerLayer.default_config().set(remat_spec=remat_spec),
+                carry=carry,
+                scan_kwargs=scan_kwargs,
             ),
             output_self_attention_kv_state=output_self_attention_kv_state,
         )
@@ -5567,15 +5573,18 @@ class StackedTransformerTest(BaseTransformerTest):
             shapes(outputs),
         )
 
-    @parameterized.parameters(
-        [None, False],
-        [("data",), False],
-        [("data",), True],
-        [("data", "self_attention_kv_state"), True],
+    @parameterized.product(
+        carry_and_kv=[
+            (None, False),
+            (("data",), False),
+            (("data",), True),
+            (("data", "self_attention_kv_state"), True),
+        ],
+        layer_type=[RepeatedTransformerLayer, StackedTransformerLayer],
     )
-    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
-    def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
-        """Tests RepeatedTransformerLayer with customized `carry`."""
+    def test_layer_with_custom_carry(self, carry_and_kv, layer_type):
+        """Tests RepeatedTransformerLayer and StackedTransformerLayer with customized `carry`."""
+        carry, precomputed_kv_state = carry_and_kv
         batch_size = 1
         seq_len = 16
         input_dim = 4
@@ -5584,15 +5593,15 @@ class StackedTransformerTest(BaseTransformerTest):
         num_layers = 3
 
         cfg = self._stack_config(
-            RepeatedTransformerLayer,
+            layer_type,
             num_layers=num_layers,
             model_dim=input_dim,
             num_heads=num_heads,
             dtype=jnp.float32,
             remat_spec=None,
             output_self_attention_kv_state=True,
+            carry=carry,
         )
-        cfg.stack.repeat.carry = repeat_carry
         cfg.stack.layer.remat_spec = build_remat_spec(cfg.stack)
         if precomputed_kv_state:
             kv_shape = (batch_size, seq_len, num_heads, head_dim)
@@ -5602,14 +5611,17 @@ class StackedTransformerTest(BaseTransformerTest):
                 key_positions=jnp.arange(seq_len)[None],
             )
             cfg.stack.layer.self_attention.attention.input_linear = QLinear.default_config()
-            expected_output = 0.7333336
+            expected_output = 2.8075213
         else:
             kv_state = None
             # carry=None and carry=("data",) are equivalent.
-            expected_output = 0.9357959
+            expected_output = 5.5741648
 
         layer = cfg.instantiate(parent=None)
-        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        # Use threefry so that vmap-based init (Repeat) and loop-based init
+        # (StackedTransformerLayer) produce identical weights per layer.
+        with prng_impl("threefry2x32"):
+            state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
         outputs, _ = F(
             layer,
@@ -5622,11 +5634,81 @@ class StackedTransformerTest(BaseTransformerTest):
                 return_aux={"self_attention_kv_state"},
             ),
         )
-        self.assertNestedAllClose(expected_output, outputs[0])
+        self.assertNestedAllClose(outputs[0], expected_output)
         if precomputed_kv_state:
-            self.assertNestedAllClose(kv_state, outputs[1]["self_attention_kv_state"])
+            self.assertNestedAllClose(outputs[1]["self_attention_kv_state"], kv_state)
         else:
             self.assertIsInstance(outputs[1]["self_attention_kv_state"], KVState)
+
+    @parameterized.product(
+        scan_kwargs=[None, ("target_segment_ids",)],
+        layer_type=[RepeatedTransformerLayer, StackedTransformerLayer],
+    )
+    def test_layer_with_custom_scan_kwargs(self, scan_kwargs, layer_type):
+        """
+        Tests RepeatedTransformerLayer and StackedTransformerLayer with customized `scan_kwargs`.
+        """
+        num_layers = 3
+        input_dim = 4
+        num_heads = 2
+
+        cfg = self._stack_config(
+            layer_type,
+            num_layers=num_layers,
+            model_dim=input_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            remat_spec=None,
+            scan_kwargs=scan_kwargs,
+        )
+        layer = cfg.instantiate(parent=None)
+        # Use threefry so that vmap-based init (Repeat) and loop-based init
+        # (StackedTransformerLayer) produce identical weights per layer.
+        with prng_impl("threefry2x32"):
+            state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        data = jax.random.uniform(jax.random.PRNGKey(1), shape=(2, 8, 4))
+        # Uniform segment IDs: same boundary at position 4 for all layers.
+        uniform_seg = jnp.array([[0, 0, 0, 0, 1, 1, 1, 1]] * 2, dtype=jnp.int32)
+
+        if scan_kwargs is not None:
+            # Uniform per-layer: identical segment IDs stacked.
+            uniform_segs = jnp.stack([uniform_seg] * num_layers)
+            outputs, _ = F(
+                layer,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+                state=state,
+                inputs=dict(data=data, target_segment_ids=uniform_segs),
+            )
+            # Uniform per-layer should match the scan_kwargs=None case.
+            self.assertNestedAllClose(outputs[0], 13.655807)
+
+            # Different per-layer: vary the segment boundary across layers.
+            varied_segs = jnp.stack(
+                [
+                    jnp.array([[0, 0, 1, 1, 1, 1, 1, 1]] * 2, dtype=jnp.int32),
+                    jnp.array([[0, 0, 0, 0, 0, 1, 1, 1]] * 2, dtype=jnp.int32),
+                    jnp.array([[0, 0, 0, 0, 0, 0, 0, 1]] * 2, dtype=jnp.int32),
+                ]
+            )
+            varied_out, _ = F(
+                layer,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+                state=state,
+                inputs=dict(data=data, target_segment_ids=varied_segs),
+            )
+            # Different per-layer values should produce a different output.
+            self.assertNestedAllClose(varied_out[0], 5.06946)
+        else:
+            outputs, _ = F(
+                layer,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+                state=state,
+                inputs=dict(data=data, target_segment_ids=uniform_seg),
+            )
+            self.assertNestedAllClose(outputs[0], 13.655807)
 
     def test_pipeline_return_aux(self):
         batch_size, num_heads, seq_len, dim = 2, 3, 4, 6

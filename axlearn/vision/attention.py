@@ -354,6 +354,15 @@ class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        if cfg.carry is not None:
+            raise NotImplementedError(
+                f"cfg.carry is not yet implemented for {type(self).__name__}, got {cfg.carry}"
+            )
+        if cfg.scan_kwargs is not None:
+            raise NotImplementedError(
+                f"cfg.scan_kwargs is not yet implemented for {type(self).__name__}, "
+                f"got {cfg.scan_kwargs}"
+            )
         if cfg.layer.input_dim is not REQUIRED:
             raise ValueError(
                 f"Do not set Config.layer.input_dim. Set Config.input_dim instead: {cfg.layer}"
