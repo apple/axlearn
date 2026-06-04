@@ -27,7 +27,6 @@ import tokamax
 from absl import logging
 from jax import lax
 from jax.experimental.pjit import pjit
-from jax.interpreters.pxla import thread_resources
 
 import axlearn.common.megablock.ops as mblx
 from axlearn.common.attention import NormPosition
@@ -2536,7 +2535,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         bsm_out_spec = cfg.output_dim_to_partition_spec["bsm"]
         bskm_out_spec = PartitionSpec(*bsm_out_spec[:2], None, bsm_out_spec[2])
 
-        mesh = thread_resources.env.physical_mesh
+        mesh = get_current_abstract_or_physical_mesh()
 
         @partial(
             jax.shard_map,
@@ -2643,7 +2642,8 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
                 # [B' x S x K, M]
                 sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
-                if thread_resources.env.physical_mesh.shape["model"] > 1:
+                mesh = get_current_abstract_or_physical_mesh()
+                if mesh.shape["model"] > 1:
                     # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
                     # we do an allreduce.
                     spec = cfg.output_dim_to_partition_spec["bsm"][2]
@@ -2729,7 +2729,7 @@ class ApproximateTokenDropFreeMoE(TransformerFeedForwardDropFreeMoE):
 
     def _has_track_axis(self) -> bool:
         """Check if we're in a vmap context with track axis (VectorizedTrackTransformerLayer)."""
-        mesh = thread_resources.env.physical_mesh
+        mesh = get_current_abstract_or_physical_mesh()
         return "track" in mesh.axis_names if mesh.axis_names else False
 
     def _dispatch_hook(

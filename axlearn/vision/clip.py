@@ -522,7 +522,7 @@ class CLIPFusionNetwork(FusionNetwork):
         log_logit_scale = self.parameters["log_logit_scale"]
         # Ref: https://arxiv.org/pdf/2103.00020.pdf pp.5 Sect. 2.5
         # Clip to prevent scaling the logits by more than 100.
-        log_logit_scale = jnp.clip(log_logit_scale, a_max=jnp.log(cfg.temperature_max_cap))
+        log_logit_scale = jnp.clip(log_logit_scale, max=jnp.log(cfg.temperature_max_cap))
         temperature = 1 / jnp.exp(log_logit_scale)
         similarity = contrastive_logits(x, y)
         loss = self._contrastive_loss_fn(similarity, similarity.T, temperature=temperature)

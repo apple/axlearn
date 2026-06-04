@@ -378,7 +378,7 @@ class ConformerLayerTest(TestCase):
         batch_axis_names=(("data", "fsdp"),),
         fsdp_axis_names=("fsdp",),
         tp_axis_names=("model",),
-        seq_axis_names=("seq",),
+        seq_axis_names=(None,),
         mesh_shape=((2, 2, 1, 2),),
         data_shape=((4, 50, 8),),
     )
@@ -406,6 +406,19 @@ class ConformerLayerTest(TestCase):
                 tp_axis_names=tp_axis_names,
                 seq_axis_names=seq_axis_names,
             )
+            cfg.ff_start.linear1.param_partition_spec = (None, tp_axis_names)
+            cfg.ff_end.linear1.param_partition_spec = (None, tp_axis_names)
+            cfg.ff_start.linear2.param_partition_spec = (tp_axis_names, None)
+            cfg.ff_end.linear2.param_partition_spec = (tp_axis_names, None)
+            cfg.ff_start.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, None)
+            cfg.ff_end.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, None)
+            cfg.self_attention.attention.output_linear.param_partition_spec = (
+                None,
+                tp_axis_names,
+                None,
+            )
+            cfg.lconv.linear2.param_partition_spec = (tp_axis_names, None)
+            cfg.lconv.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, None)
 
             data_prng, param_prng, forward_prng = jax.random.split(jax.random.PRNGKey(0), 3)
 
@@ -422,19 +435,19 @@ class ConformerLayerTest(TestCase):
             )(param_prng)
             self.assertEqual(
                 base_state["ff_start"]["linear1"]["weight"].sharding.spec,
-                PartitionSpec("fsdp", "model"),
+                PartitionSpec(None, "model"),
             )
             self.assertEqual(
                 base_state["ff_start"]["linear2"]["weight"].sharding.spec,
-                PartitionSpec("model", "fsdp"),
+                PartitionSpec("model", None),
             )
             self.assertEqual(
                 base_state["ff_end"]["linear1"]["weight"].sharding.spec,
-                PartitionSpec("fsdp", "model"),
+                PartitionSpec(None, "model"),
             )
             self.assertEqual(
                 base_state["ff_end"]["linear2"]["weight"].sharding.spec,
-                PartitionSpec("model", "fsdp"),
+                PartitionSpec("model", None),
             )
             self.assertEqual(
                 base_state["self_attention"]["attention"]["i_proj"]["qkv_proj"][
@@ -444,7 +457,7 @@ class ConformerLayerTest(TestCase):
             )
             self.assertEqual(
                 base_state["self_attention"]["attention"]["o_proj"]["weight"].sharding.spec,
-                PartitionSpec("fsdp", "model", None),
+                PartitionSpec(None, "model", None),
             )
             self.assertEqual(
                 base_state["lconv"]["linear1_0"]["weight"].sharding.spec,
@@ -456,7 +469,7 @@ class ConformerLayerTest(TestCase):
             )
             self.assertEqual(
                 base_state["lconv"]["linear2"]["weight"].sharding.spec,
-                PartitionSpec("model", "fsdp"),
+                PartitionSpec("model", None),
             )
             self.assertEqual(
                 base_state["lconv"]["conv"]["weight"].sharding.spec,
@@ -467,17 +480,28 @@ class ConformerLayerTest(TestCase):
             x = jax.random.normal(data_prng, data_shape)
             x = jax.device_put(
                 x,
-                NamedSharding(mesh, PartitionSpec(batch_axis_names, seq_axis_names, tp_axis_names)),
+                NamedSharding(mesh, PartitionSpec(batch_axis_names, None, None)),
             )
-            paddings = jnp.zeros_like(x[:, :, 0]).astype(jnp.bool_)
+            paddings = jnp.zeros(x.shape[:2], dtype=jnp.bool_)
+            paddings = jax.device_put(
+                paddings,
+                NamedSharding(mesh, PartitionSpec(batch_axis_names, seq_axis_names)),
+            )
             segment_ids = safe_not(paddings).astype(jnp.int32)
 
             # Test FeedForward
             def patched_remat_name_ff(_, tensor, name):
                 def callback(sharding):
-                    if name in ("linear1_0", "linear2"):
+                    if name == "linear1_0":
                         self.assertEqual(
                             sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
+                        )
+                    elif name == "linear2":
+                        self.assertEqual(
+                            sharding.spec,
+                            PartitionSpec(
+                                ("data", "fsdp"),
+                            ),
                         )
 
                 jax.debug.inspect_array_sharding(tensor, callback=callback)
@@ -485,58 +509,70 @@ class ConformerLayerTest(TestCase):
 
             with patch.object(TransformerFeedForwardLayer, "_remat_name", patched_remat_name_ff):
 
-                @jax.jit
-                def jit_fn_ff():
+                def jit_fn_ff(x_arg):
                     base_outputs, _ = F(
                         base_layer,
                         state=base_state,
                         is_training=True,
                         prng_key=forward_prng,
-                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                        inputs=dict(inputs=x_arg, segment_ids=segment_ids),
                     )
                     return base_outputs
 
-                jit_fn_ff()
+                with jax.set_mesh(mesh):
+                    jax.jit(
+                        jit_fn_ff,
+                        in_shardings=(
+                            NamedSharding(mesh, PartitionSpec(batch_axis_names, None, None)),
+                        ),
+                    )(x)
 
             # Test Attention
             def patched_remat_name_mh(_, tensor, name):
                 def callback(sharding):
                     if name in ("q_proj", "k_proj", "v_proj", "context"):
                         self.assertEqual(
-                            sharding.spec,
-                            PartitionSpec(
-                                ("data", "fsdp"),
-                            ),
-                        )
-                    elif name == "o_proj":
-                        self.assertEqual(
                             sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
                         )
+                    elif name == "o_proj":
+                        self.assertEqual(sharding.spec, PartitionSpec())
 
                 jax.debug.inspect_array_sharding(tensor, callback=callback)
                 return tensor
 
             with patch.object(MultiheadAttention, "_remat_name", patched_remat_name_mh):
 
-                @jax.jit
-                def jit_fn_mh():
+                def jit_fn_mh(x_arg):
                     base_outputs, _ = F(
                         base_layer,
                         state=base_state,
                         is_training=True,
                         prng_key=forward_prng,
-                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                        inputs=dict(inputs=x_arg, segment_ids=segment_ids),
                     )
                     return base_outputs
 
-                jit_fn_mh()
+                with jax.set_mesh(mesh):
+                    jax.jit(
+                        jit_fn_mh,
+                        in_shardings=(
+                            NamedSharding(mesh, PartitionSpec(batch_axis_names, None, None)),
+                        ),
+                    )(x)
 
             # Test LConv
             def patched_remat_name_lc(_, tensor, name):
                 def callback(sharding):
-                    if name in ("linear1_0", "linear1_1", "linear2"):
+                    if name in ("linear1_0", "linear1_1"):
                         self.assertEqual(
                             sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
+                        )
+                    elif name == "linear2":
+                        self.assertEqual(
+                            sharding.spec,
+                            PartitionSpec(
+                                ("data", "fsdp"),
+                            ),
                         )
 
                 jax.debug.inspect_array_sharding(tensor, callback=callback)
@@ -544,18 +580,23 @@ class ConformerLayerTest(TestCase):
 
             with patch.object(LConvLayer, "_remat_name", patched_remat_name_lc):
 
-                @jax.jit
-                def jit_fn_lc():
+                def jit_fn_lc(x_arg):
                     base_outputs, _ = F(
                         base_layer,
                         state=base_state,
                         is_training=True,
                         prng_key=forward_prng,
-                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                        inputs=dict(inputs=x_arg, segment_ids=segment_ids),
                     )
                     return base_outputs
 
-                jit_fn_lc()
+                with jax.set_mesh(mesh):
+                    jax.jit(
+                        jit_fn_lc,
+                        in_shardings=(
+                            NamedSharding(mesh, PartitionSpec(batch_axis_names, None, None)),
+                        ),
+                    )(x)
 
 
 if __name__ == "__main__":

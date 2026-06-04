@@ -83,13 +83,13 @@ def _paged_attention_kernel(
             Tuple of (output, max_logits, sum_exponentials).
         """
         q_slice = pl.ds(0, block_h)
-        q = pl.load(q_ref, (q_slice, slice(None))) * softmax_scale
+        q = q_ref[q_slice, :] * softmax_scale
 
         def body(start_k, carry):
             o_prev, m_prev, l_prev = carry
 
             page_tables_slice = pl.ds(start_k * pages_per_compute_block, pages_per_compute_block)
-            page_tables = pl.load(page_tables_ref, page_tables_slice)
+            page_tables = page_tables_ref[page_tables_slice]
             k = key_ref[page_tables].reshape(block_k, head_dim)
             v = value_ref[page_tables].reshape(block_k, head_dim)
             logits = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
@@ -101,7 +101,7 @@ def _paged_attention_kernel(
 
             if bias_ref is not None:
                 bias_slice = pl.ds(start_k * block_k, block_k)
-                bias = pl.load(bias_ref, (slice(None), bias_slice))
+                bias = bias_ref[:, bias_slice]
                 logits += bias
 
             if mask_fn is not None:
@@ -131,7 +131,7 @@ def _paged_attention_kernel(
     m_i = jnp.zeros(block_h, dtype=jnp.float32) + jnp.finfo(jnp.float32).min
     l_i = jnp.zeros(block_h, dtype=jnp.float32)
     o = jnp.zeros((block_h, head_dim), dtype=jnp.float32)
-    length = pl.load(lengths_ref, ())
+    length = lengths_ref[...]
 
     start_page_idx = partition_idx * pages_per_partition
     end_page_idx = start_page_idx + pages_per_partition

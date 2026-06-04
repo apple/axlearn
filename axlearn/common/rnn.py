@@ -211,7 +211,7 @@ class LSTMCell(BaseRNNCell):
         old_c = cached_states["c"]
         new_c = jax.nn.sigmoid(proj_f) * old_c + jax.nn.sigmoid(proj_g) * jax.nn.tanh(proj_i)
         if cfg.max_cell_value is not None:
-            new_c = jnp.clip(new_c, a_min=-cfg.max_cell_value, a_max=cfg.max_cell_value)
+            new_c = jnp.clip(new_c, min=-cfg.max_cell_value, max=cfg.max_cell_value)
         # [batch, output_dim].
         # Output_nonlinearity is default to True in Lingvo.
         # https://github.com/tensorflow/lingvo/blob/06553f297bbc38eb369503a421d07515d114cbb4/lingvo/core/rnn_cell.py#L247.

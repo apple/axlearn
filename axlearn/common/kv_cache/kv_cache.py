@@ -73,43 +73,22 @@ class KVCache(BaseKVCache):
         k_proj = jnp.einsum("btnh->bnht", k_proj)
         v_proj = jnp.einsum("btnh->bnht", v_proj)
 
-        # On GPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 32.
-        # On TPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 1024.
-        threshold = 32 if jax.default_backend() != "tpu" else 1024
+        # One-hot matmul is used for cache updates. It is 10-20% faster than
+        # dynamic_update_slice_in_dim for small step sizes on both TPU and GPU,
+        # and avoids ShardingTypeError on JAX 0.10.0 Explicit-axis meshes where
+        # scatter ops can't resolve ambiguous output sharding.
+        source_len = cached_key.shape[-1]
+        # Padding positions (mapped to _INVALID_KV_POSITION ≥ source_len) produce all-zero
+        # one_hot rows, leaving every cache slot untouched.
+        oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
+        keep_mask = ~oh_indices.any(axis=1)  # [B, S]
 
-        # dynamic_update_slice_in_dim is typically used for updating tensors, but we found that
-        # when step_size is small, one-hot matmul is 10-20% faster on both TPU and GPU.
-        if step_size < threshold:
-            source_len = cached_key.shape[-1]
-            # Padding positions (mapped to _INVALID_KV_POSITION ≥ source_len) produce all-zero
-            # one_hot rows, leaving every cache slot untouched.
-            oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
-            keep_mask = ~oh_indices.any(axis=1)  # [B, S]
-
-            k_scattered = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
-            v_scattered = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
-            cached_key = cached_key * keep_mask[:, None, None, :] + k_scattered.astype(
-                cached_key.dtype
-            )
-            cached_value = cached_value * keep_mask[:, None, None, :] + v_scattered.astype(
-                cached_value.dtype
-            )
-        else:
-            # Note: KV transpose is an optimization for one-hot matmul and is not related to
-            # dynamic_update_slice_in_dim. As a result, KV transpose only adds overhead for it.
-            # Since small step_size scenarios are more frequent, we accept slowdown in this case.
-
-            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
-                return jax.lax.dynamic_update_slice_in_dim(
-                    cached_kv_slice, kv_proj_slice, time_idx, axis=-1
-                )
-
-            vmap_update = jax.vmap(update_single)
-            # Use the first (valid) position as the write offset. `segment_ids` must be contiguous
-            # at the beginning (e.g., [1,1,1,0,0,0]).
-            time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
-            cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
-            cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
+        k_scattered = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+        v_scattered = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+        cached_key = cached_key * keep_mask[:, None, None, :] + k_scattered.astype(cached_key.dtype)
+        cached_value = cached_value * keep_mask[:, None, None, :] + v_scattered.astype(
+            cached_value.dtype
+        )
 
         updated_state = dict(key=cached_key, value=cached_value)
         assert updated_state["key"].shape == cached_key.shape

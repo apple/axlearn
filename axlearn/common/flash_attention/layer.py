@@ -9,7 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention, KVState
@@ -122,12 +121,25 @@ class FlashAttention(GroupedQueryAttention):
 
     def _backend(self):
         # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
-        global_mesh = thread_resources.env.physical_mesh
-        if len(global_mesh.devices):
-            backend = global_mesh.devices.flat[0].platform
-        else:
-            # Fall back to jax.default_backend() if no device is found in physical_mesh.
+        global_mesh = get_current_abstract_or_physical_mesh()
+
+        backend = None
+        if hasattr(global_mesh, "devices") and global_mesh.devices is not None:
+            for device in global_mesh.devices.flat:
+                if device is not None:
+                    backend = device.platform
+                    break
+
+        if (
+            backend is None
+            and hasattr(global_mesh, "device_kind")
+            and global_mesh.device_kind is not None
+        ):
+            backend = global_mesh.device_kind
+
+        if backend is None:
             backend = jax.default_backend()
+
         return backend
 
     def _logit_biases_spec(self, attention_logit_biases: BaseAttentionBias) -> BaseAttentionBias:
@@ -138,7 +150,8 @@ class FlashAttention(GroupedQueryAttention):
         """Repeats key or value heads dim to be shardable."""
         cfg: FlashAttention.Config = self.config
         partition_spec = cfg.mha_dim_to_partition_spec["bsnh"]
-        global_mesh = thread_resources.env.physical_mesh
+        global_mesh = get_current_abstract_or_physical_mesh()
+
         if (
             partition_spec == PartitionSpec(None)
             or len(partition_spec) != 4
@@ -282,8 +295,10 @@ class FlashAttention(GroupedQueryAttention):
         sharded_axes = jax.tree.flatten(sharded_axes)[0]
         prng_key_partition_spec = PartitionSpec(sharded_axes) if sharded_axes else PartitionSpec()
         # Pre-split PRNG key to ensure unique randomness across sharded devices
+        global_mesh = get_current_abstract_or_physical_mesh()
+
         prepared_prng_key = split_prng_keys_for_shard_map(
-            self.dropout.get_prng_key(), prng_key_partition_spec, thread_resources.env.physical_mesh
+            self.dropout.get_prng_key(), prng_key_partition_spec, global_mesh
         )
 
         # We need to manually partition pallas | jax-triton calls.

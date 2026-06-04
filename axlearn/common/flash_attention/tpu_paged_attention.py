@@ -258,8 +258,8 @@ class TPUPagedAttention(BasePagedAttention):
 
         in_specs = [
             q_block_spec,  # Query
-            pl.BlockSpec(memory_space=pltpu.ANY),  # Key pages
-            pl.BlockSpec(memory_space=pltpu.ANY),  # Value pages
+            pl.BlockSpec(memory_space=pl.ANY),  # Key pages
+            pl.BlockSpec(memory_space=pl.ANY),  # Value pages
             bias_spec,  # Bias
             logit_sink_spec,  # Logit sink
         ]

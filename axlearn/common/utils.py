@@ -634,11 +634,41 @@ def as_numpy_array(x: Any):
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
+def _to_named_sharding(mesh, shardings):
+    """Convert shardings to a NamedSharding suitable for jax.reshard on Explicit-axis meshes."""
+    if isinstance(shardings, PartitionSpec):
+        if hasattr(mesh, "axis_types") and PartitionSpec.UNCONSTRAINED in shardings:
+            spec = tuple(None if s is PartitionSpec.UNCONSTRAINED else s for s in shardings)
+            shardings = PartitionSpec(*spec)
+        shardings = jax.sharding.NamedSharding(mesh, shardings)
+    return shardings
+
+
 def with_sharding_constraint(x: Tensor, shardings):
     mesh = thread_resources.env.physical_mesh
-    if mesh.empty or mesh.size == 1:
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if (mesh.empty or mesh.size == 1) and (abstract_mesh.empty or abstract_mesh.are_all_axes_auto):
         return x
-    return jax.lax.with_sharding_constraint(x, shardings)
+    if not abstract_mesh.empty and not abstract_mesh.are_all_axes_auto:
+        try:
+            return jax.reshard(x, _to_named_sharding(abstract_mesh, shardings))
+        except (ValueError, TypeError) as e:
+            logging.log_first_n(
+                logging.WARNING,
+                "with_sharding_constraint: jax.reshard failed with abstract mesh: %s",
+                3,
+                e,
+            )
+            return x
+    try:
+        return jax.lax.with_sharding_constraint(x, shardings)
+    except (ValueError, TypeError):
+        # JAX 0.10.0: jax.make_mesh creates Explicit-axis physical meshes that reject
+        # with_sharding_constraint even when the abstract mesh appears unset or all-Auto.
+        try:
+            return jax.reshard(x, _to_named_sharding(mesh, shardings))
+        except (ValueError, TypeError):
+            return x
 
 
 def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
@@ -648,9 +678,13 @@ def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> Nes
 
 
 def get_current_abstract_or_physical_mesh() -> jax.sharding.AbstractMesh | jax.sharding.Mesh:
-    """Returns the current abstract mesh if it's set, or the physical mesh otherwise."""
+    """Returns the current abstract mesh if it's set with Explicit axes, or physical mesh otherwise.
+
+    When the abstract mesh has all Auto axes (GSPMD mode), returns the physical mesh instead,
+    since operations like shard_map require Explicit-axis meshes in JAX 0.10.x.
+    """
     mesh = jax.sharding.get_abstract_mesh()
-    if mesh.empty:
+    if mesh.empty or mesh.are_all_axes_auto:
         return thread_resources.env.physical_mesh
     return mesh
 

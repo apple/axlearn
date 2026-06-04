@@ -819,6 +819,21 @@ class BastionTest(parameterized.TestCase):
             for m in mocks:
                 stack.enter_context(m)
 
+            original_download_job_batch = bastion.download_job_batch
+
+            def wrapped_download_job_batch(*args, **kwargs):
+                if "local_spec_dir" not in kwargs or kwargs["local_spec_dir"] == bastion._JOB_DIR:
+                    kwargs["local_spec_dir"] = tmpdir
+                return original_download_job_batch(*args, **kwargs)
+
+            stack.enter_context(
+                mock.patch(
+                    f"{module_name}.download_job_batch",
+                    side_effect=wrapped_download_job_batch,
+                )
+            )
+            stack.enter_context(mock.patch(f"{__name__}._JOB_DIR", tmpdir))
+
             cfg = Bastion.default_config().set(
                 scheduler=JobScheduler.default_config(),
                 cleaner=NoOpCleaner.default_config(),

@@ -26,7 +26,8 @@ import jax
 from absl import logging
 from jax import nn
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec
+from jax._src.mesh import get_abstract_mesh
+from jax.sharding import NamedSharding, PartitionSpec
 
 from axlearn.common import convolution
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterNoise, ParameterSpec
@@ -765,8 +766,16 @@ class Linear(DenseGeneralBaseLayer):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
+        out_sharding = None
+        if cfg.output_partition_spec is not None:
+            mesh = get_abstract_mesh()
+            if not mesh.empty and not mesh.are_all_axes_auto:
+                out_sharding = NamedSharding(mesh, PartitionSpec(*cfg.output_partition_spec))
         output = self.einsum_maybe_quantized(
-            "...d,dh->...h", activation=x, kernel=self.parameters["weight"]
+            "...d,dh->...h",
+            activation=x,
+            kernel=self.parameters["weight"],
+            out_sharding=out_sharding,
         )
         if cfg.bias:
             output += self.parameters["bias"]

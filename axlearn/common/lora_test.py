@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax.sharding import PartitionSpec
 
 from axlearn.common import utils
 from axlearn.common.attention import (
@@ -51,8 +52,8 @@ class LoraLinearTest(TestCase):
         layer_cfg.lora_up.param_partition_spec = [None, "data"]
         layer = layer_cfg.instantiate(parent=None)
         param_specs = layer.create_parameter_specs_recursively()
-        self.assertEqual(param_specs["lora_down"]["weight"].mesh_axes, ("data", None))
-        self.assertEqual(param_specs["lora_up"]["weight"].mesh_axes, (None, "data"))
+        self.assertEqual(param_specs["lora_down"]["weight"].mesh_axes, PartitionSpec("data", None))
+        self.assertEqual(param_specs["lora_up"]["weight"].mesh_axes, PartitionSpec(None, "data"))
 
     def test_forward(self):
         input_dim = 2

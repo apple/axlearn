@@ -10,7 +10,6 @@ from functools import partial
 from typing import Any, Optional
 from unittest import mock
 
-import jax.ad_checkpoint
 import jax.core
 import jax.interpreters.ad
 import jax.random

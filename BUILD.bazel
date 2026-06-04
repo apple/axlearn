@@ -6,6 +6,7 @@ load("@rules_python//python/uv:lock.bzl", "lock")
 load("@rules_python_gazelle_plugin//manifest:defs.bzl", "gazelle_python_manifest")
 load("@rules_python_gazelle_plugin//modules_mapping:def.bzl", "modules_mapping")
 
+
 # Top-level Gazelle directives.
 # gazelle:python_generation_mode file
 # gazelle:python_test_file_pattern *_test.py
@@ -27,25 +28,19 @@ package(default_visibility = ["//visibility:public"])
 
 modules_mapping(
     name = "modules_map",
-    wheels = all_whl_requirements,
-)
+    )
 
 gazelle_python_manifest(
     name = "gazelle_python_manifest",
-    modules_mapping = ":modules_map",
-    pip_repository_name = "axlearn_pip",
-    requirements = "//:requirements_lock.txt",
-)
+    )
 
 gazelle_binary(
     name = "gazelle_binary",
-    languages = ["@rules_python_gazelle_plugin//python"],
-)
+    )
 
 gazelle(
     name = "gazelle",
-    gazelle = ":gazelle_binary",
-)
+    )
 
 buildifier(
     name = "buildifier",

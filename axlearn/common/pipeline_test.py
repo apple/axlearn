@@ -5,6 +5,7 @@
 # pylint: disable=no-self-use,duplicate-code,protected-access
 from typing import Optional, cast
 
+import jax
 import jax.random
 from absl import logging
 from absl.testing import absltest, parameterized

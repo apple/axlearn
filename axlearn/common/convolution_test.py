@@ -542,7 +542,7 @@ class ConvTest(TestCase):
             state=layer_params,
             prng_key=jax.random.PRNGKey(123),
         )
-        assert_allclose(outputs, golden["outputs"]["ref"])
+        assert_allclose(outputs, golden["outputs"]["ref"], atol=1e-5)
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)

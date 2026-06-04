@@ -295,6 +295,24 @@ def use_gcs_grpc(tensorstore_spec: dict[str, Any]) -> tuple[dict[str, Any], ts.C
     return tensorstore_spec, context
 
 
+def maybe_with_s3_endpoint(tensorstore_spec: dict[str, Any]) -> dict[str, Any]:
+    """Returns a copy of spec with ``AWS_ENDPOINT_URL_S3`` / ``AWS_ENDPOINT_URL`` injected
+    into an S3 kvstore. Tensorstore's S3 driver does not honor these env vars, so without
+    this, S3-compatible endpoints (MinIO, R2, ...) silently route to real AWS.
+
+    Pure. Applied once at each checkpoint-manager ``serialize`` / ``deserialize`` entry
+    point, so downstream helpers receive already-rewritten specs. Callers that bypass
+    those entry points (e.g. direct use of ``_async_serialize``) must call this themselves.
+    """
+    endpoint = os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL")
+    if not endpoint:
+        return tensorstore_spec
+    kv = tensorstore_spec.get("kvstore")
+    if isinstance(kv, dict) and kv.get("driver") == "s3" and "endpoint" not in kv:
+        return {**tensorstore_spec, "kvstore": {**kv, "endpoint": endpoint}}
+    return tensorstore_spec
+
+
 def running_on_pathways():
     """
     We use GCP only for inference with Pathways. In this setup, JAX_PLATFORMS is set to
@@ -1028,6 +1046,10 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         on_commit_callback: Callable[[], None],
         additional_futures: Optional[list[futures.Future]] = None,
     ):
+        # Apply S3 endpoint once at the public entry point; downstream `ts.open` calls
+        # inherit the rewritten specs. See `maybe_with_s3_endpoint`.
+        tensorstore_specs = [maybe_with_s3_endpoint(s) for s in tensorstore_specs]
+
         logging.info("Waiting for previous serialization to finish.")
         self.wait_until_finished()
 
@@ -1082,6 +1104,11 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             COLOCATED_PYTHON_PIPELINE_CONCURRENT_GB: Maximum concurrent GB in flight during
                 CPU to TPU transfer when using colocated Python. Defaults to 32.
         """
+        # Apply S3 endpoint once at the public entry point; downstream `ts.open` calls
+        # (including the colocated-python sidecar) inherit the rewritten specs. See
+        # `maybe_with_s3_endpoint`.
+        tensorstore_specs = [maybe_with_s3_endpoint(s) for s in tensorstore_specs]
+
         self.wait_until_finished()
         start_time = time.perf_counter()
 
@@ -1112,7 +1139,11 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             resolved_shapes = [
                 (
                     tuple(
-                        ts.open(ts.Spec(spec), open=True, context=serialization.TS_CONTEXT)
+                        ts.open(
+                            ts.Spec(spec),
+                            open=True,
+                            context=serialization.TS_CONTEXT,
+                        )
                         .result()
                         .shape
                     )
@@ -1236,6 +1267,10 @@ class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
         additional_futures: Optional[list[futures.Future]] = None,
     ):
         """See JAX `GlobalAsyncCheckpointManager` docstring."""
+
+        # Apply S3 endpoint once at the public entry point; downstream `ts.open` calls
+        # inherit the rewritten specs. See `maybe_with_s3_endpoint`.
+        tensorstore_specs = [maybe_with_s3_endpoint(s) for s in tensorstore_specs]
 
         start_t = time.time()
         self.wait_until_finished()

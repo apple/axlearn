@@ -182,6 +182,7 @@ manifest:
     joblib: joblib
     keras: keras
     kubernetes: kubernetes
+    libtpu: libtpu
     markdown: markdown
     markdown_it: markdown_it_py
     markupsafe: markupsafe
@@ -301,4 +302,4 @@ manifest:
     zipp: zipp
   pip_repository:
     name: axlearn_pip
-integrity: ac57c9f0b0b6edc9ebbd1a3c07e15355df147ee70d4d1719e22bd9d89e32a52f
+integrity: 6f6db821e4518d489657d67a31d06d0303979cd272f9019649367f4f170e071f

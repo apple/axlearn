@@ -96,7 +96,8 @@ def _attn_forward_kernel(
         # Load q: it will stay in L1 throughout. Indices form a matrix because we
         # read, compute, and write all in 2d chunks. 1 element ~= 1 CUDA thread index.
         # q tile has shape [block_h, head_dim].
-        q = pl.load(q_ref, (slice(None), slice(None)), mask=q_mask) * softmax_scale
+        q_raw = q_ref[...]
+        q = jnp.where(q_mask, q_raw, 0.0) * softmax_scale
 
         mask_indices = jnp.arange(block_k)
 
@@ -111,13 +112,11 @@ def _attn_forward_kernel(
 
             def compute():
                 curr_k_slice = pl.ds(start_k * block_k, block_k)
-                k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                k = jnp.where(mask[:, None], k_ref[curr_k_slice, :], 0.0)
                 k = k.astype(q.dtype)
                 qk = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
                 if bias_ref is not None:
-                    qk += pl.load(
-                        bias_ref, (slice(None), curr_k_slice), mask=mask[None, :], other=0.0
-                    )
+                    qk += jnp.where(mask[None, :], bias_ref[:, curr_k_slice], 0.0)
 
                 qk = jnp.where(logits_mask[None, :], qk, NEG_INF)
 
@@ -129,7 +128,7 @@ def _attn_forward_kernel(
                 s_curr = jnp.exp(qk - m_next[:, None])
                 l_curr = s_curr.sum(axis=-1)
                 l_next = l_prev_corr + l_curr
-                v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                v = jnp.where(mask[:, None], v_ref[curr_k_slice, :], 0.0)
                 v = v.astype(q.dtype)
                 o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
@@ -156,7 +155,7 @@ def _attn_forward_kernel(
     o = jnp.zeros((block_h, head_dim), dtype=jnp.float32)
 
     block_kv_start_idx = prog_j * split_k_seq_len
-    kv_seq_len = pl.load(kv_seq_len_ref, ())
+    kv_seq_len = kv_seq_len_ref[...]
     block_kv_seqlen = jnp.minimum((prog_j + 1) * split_k_seq_len, kv_seq_len)
 
     # Skip padding in seq dim.
@@ -168,9 +167,9 @@ def _attn_forward_kernel(
 
     # Write output to HBM.
     vec_q_mask = q_mask.reshape(-1)
-    pl.store(l_ref, slice(None), l_i, mask=vec_q_mask)
-    pl.store(m_ref, slice(None), m_i, mask=vec_q_mask)
-    pl.store(o_ref, (slice(None), slice(None)), o, mask=q_mask)
+    l_ref[...] = jnp.where(vec_q_mask, l_i, l_ref[...])
+    m_ref[...] = jnp.where(vec_q_mask, m_i, m_ref[...])
+    o_ref[...] = jnp.where(q_mask, o, o_ref[...])
 
 
 def _get_sm_count() -> int:

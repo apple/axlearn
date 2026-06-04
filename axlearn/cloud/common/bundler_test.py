@@ -42,6 +42,14 @@ def _create_dummy_config(temp_dir: str):
 class BundlerTest(TestWithTemporaryCWD):
     """Tests Bundler."""
 
+    def setUp(self):
+        super().setUp()
+        self.mock_expanduser = mock.patch(
+            "os.path.expanduser", return_value=os.path.join(self._temp_root.name, "user")
+        )
+        self.mock_expanduser.start()
+        self.addCleanup(self.mock_expanduser.stop)
+
     def test_local_dir_context_config(self):
         b = Bundler.default_config().instantiate()
 

@@ -46,7 +46,7 @@ class RematSpecModifierTest(test_utils.TestCase):
                 remat_policies={
                     "model.linear": RematSpec(
                         prevent_cse=True,
-                        policy=jax.ad_checkpoint.checkpoint_policies.dots_saveable,
+                        policy=jax.checkpoint_policies.dots_saveable,
                     ),
                 }
             )
@@ -60,11 +60,11 @@ class RematSpecModifierTest(test_utils.TestCase):
                 remat_policies={
                     "model.linear": RematSpec(
                         prevent_cse=True,
-                        policy=jax.ad_checkpoint.checkpoint_policies.dots_saveable,
+                        policy=jax.checkpoint_policies.dots_saveable,
                     ),
                     "model.unknown": RematSpec(
                         prevent_cse=True,
-                        policy=jax.ad_checkpoint.checkpoint_policies.dots_saveable,
+                        policy=jax.checkpoint_policies.dots_saveable,
                     ),
                 }
             )

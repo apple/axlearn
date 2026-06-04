@@ -2,8 +2,8 @@
 # Custom wheels for tensorflow-io and libtpu (matches pyproject.toml [tool.uv.pip] find-links).
 --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html
 --find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
-jax==0.8.3
-jaxlib==0.8.3
+jax==0.10.1
+jaxlib==0.10.1
 typing-extensions
 attrs
 numpy
@@ -12,8 +12,8 @@ chex
 pytest
 wrapt
 optax
-tensorflow==2.19.1
-tensorflow_datasets
+tensorflow==2.21.0.2
+tensorflow_datasets==4.9.10
 msgpack
 portpicker
 grain
@@ -46,9 +46,11 @@ scipy  # common/metrics_correlation_test.py — pearsonr, spearmanr, rankdata
 levenshtein  # audio/evaler_asr.py — WER edit distance computation
 einops  # common/rattention/kernels/ — tensor rearrange (test-only, not thread-safe)
 pycocotools  # vision/coco_utils.py, vision/coco_evaluator.py — COCO evaluation API
-tensorflow-io @ https://storage.googleapis.com/axlearn-wheels/tensorflow_io/tensorflow_io-0.37.3-cp312-cp312-manylinux_2_31_x86_64.whl ; sys_platform == 'linux'  # common/env_test.py, common/input_tf_data.py — colleague's rebuild for #2457; Linux-only wheel
-tensorflow-io-gcs-filesystem @ https://storage.googleapis.com/axlearn-wheels/tensorflow_io_gcs_filesystem/tensorflow_io_gcs_filesystem-0.37.3-cp312-cp312-manylinux_2_31_x86_64.whl ; sys_platform == 'linux'  # paired rebuild for #2457; Linux-only wheel
+tensorflow-io==0.37.4
+tensorflow-io-gcs-filesystem==0.37.4
 pika  # cloud/common/event_queue.py — RabbitMQ AMQP client
 tpu-info  # cloud/gcp/monitoring/tpu_client.py — TPU device metrics
 google-cloud-aiplatform  # cloud/gcp/vertexai_tensorboard.py — VertexAI SDK
-libtpu==0.0.32.4 # For TPU kernels
+libtpu # For TPU kernels
+tensorboard
+flax==0.12.7

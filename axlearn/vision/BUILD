@@ -910,6 +910,7 @@ py_test(
     name = "retinanet_test",
     size = "large",
     srcs = ["retinanet_test.py"],
+    shard_count = 4,
     deps = [
         ":input_detection",
         ":retinanet",

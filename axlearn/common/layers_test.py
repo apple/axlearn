@@ -570,14 +570,14 @@ class LayerTest(TestCase):
 
         # 1. Input tensor constraint.
         input_spec = calls[0].args[1]
-        self.assertEqual(input_spec, ("fsdp", "model", None))
+        self.assertEqual((input_spec), jax.P("fsdp", "model", None))
         self.assertEqual(calls[0].args[0].shape, (2, 3, dim))
         self.assertEqual(calls[0].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[0].args[0], inputs)
 
         # 2. Output tensor constraint.
         output_spec = calls[1].args[1]
-        self.assertEqual(output_spec, ("fsdp", None, None))
+        self.assertEqual((output_spec), jax.P("fsdp", None, None))
         self.assertEqual(calls[1].args[0].shape, (2, 3, dim))
         self.assertEqual(calls[1].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[1].args[0], outputs)
@@ -1423,21 +1423,21 @@ class EmbedTest(parameterized.TestCase):
 
         # 1. Input activation constraint (indices tensor).
         input_spec = calls[0].args[1]
-        self.assertEqual(input_spec, ("fsdp", None))
+        self.assertEqual(tuple(input_spec), ("fsdp", None))
         self.assertEqual(calls[0].args[0].shape, (3, seq_len))
         self.assertEqual(calls[0].args[0].dtype, jnp.int32)
         np.testing.assert_array_equal(calls[0].args[0], ixs)
 
         # 2. Embedding weight constraint.
         weight_spec = calls[1].args[1]
-        self.assertEqual(weight_spec, ("model", "fsdp"))
+        self.assertEqual(tuple(weight_spec), ("model", "fsdp"))
         self.assertEqual(calls[1].args[0].shape, (num_embeddings, dim))
         self.assertEqual(calls[1].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[1].args[0], state["weight"])
 
         # 3. Output activation constraint (after lookup).
         output_spec = calls[2].args[1]
-        self.assertEqual(output_spec, ("fsdp", "model"))
+        self.assertEqual(tuple(output_spec), ("fsdp", "model"))
         self.assertEqual(calls[2].args[0].shape, (3, seq_len, dim))
         self.assertEqual(calls[2].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[2].args[0], actual_embeds)

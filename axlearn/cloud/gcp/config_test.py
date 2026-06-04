@@ -3,6 +3,7 @@
 """Tests config utils."""
 
 import os
+from unittest.mock import patch
 
 from absl import flags
 from absl.testing import absltest
@@ -15,6 +16,12 @@ from axlearn.common.test_utils import TestWithTemporaryCWD
 
 class ConfigTest(TestWithTemporaryCWD):
     """Tests config utils."""
+
+    def setUp(self):
+        super().setUp()
+        self.mock_expanduser = self.enter_context(
+            patch("os.path.expanduser", side_effect=lambda x: x.replace("~", self._temp_root.name))
+        )
 
     def test_gcp_settings(self):
         temp_dir = os.path.realpath(self._temp_root.name)

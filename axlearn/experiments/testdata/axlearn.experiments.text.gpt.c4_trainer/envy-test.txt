@@ -22,7 +22,7 @@ evalers['train'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.def
 evalers['train'].input.batcher.prefetch_buffer_size: -1
 evalers['train'].input.input_dispatcher.global_logical_batch_size: 16
 evalers['train'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-evalers['train'].input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+evalers['train'].input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 evalers['train'].input.is_training: False
 evalers['train'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['train'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -52,7 +52,7 @@ evalers['validation'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_dat
 evalers['validation'].input.batcher.prefetch_buffer_size: -1
 evalers['validation'].input.input_dispatcher.global_logical_batch_size: 16
 evalers['validation'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-evalers['validation'].input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+evalers['validation'].input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 evalers['validation'].input.is_training: False
 evalers['validation'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['validation'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -77,10 +77,10 @@ input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_
 input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 16
 input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
-input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
-input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')
+input.input_partitioner.path_rank_to_partition[(None, 1)]: P(('data', 'expert', 'fsdp'),)
+input.input_partitioner.path_rank_to_partition[(None, 2)]: P(('data', 'expert', 'fsdp'), 'seq')
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -274,14 +274,14 @@ model.decoder.transformer.layer.layer[0].self_attention.structure: 'prenorm'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[0]: 'nn.silu'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[1]: 'linear'
 model.decoder.transformer.layer.layer[1].feed_forward.corr_loss_weight: 0
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh']: PartitionSpec('expert', 'fsdp', 'model')
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm']: PartitionSpec('expert', 'model', 'fsdp')
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm']: PartitionSpec(('data', 'fsdp'), 'expert', None, 'model')
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec']: PartitionSpec(('data', 'fsdp'), None, None, 'expert', None)
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm']: PartitionSpec(('data', 'fsdp'), 'expert', None, None, 'model')
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm']: PartitionSpec(('data', 'fsdp'), None, 'expert', None, 'model')
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch']: PartitionSpec(('data', 'fsdp'), 'expert', None, None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me']: P(None, None)
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh']: P('expert', 'fsdp', 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm']: P('expert', 'model', 'fsdp')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm']: P(('data', 'fsdp'), 'expert', None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec']: P(('data', 'fsdp'), None, None, 'expert', None)
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm']: P(('data', 'fsdp'), 'expert', None, None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm']: P(('data', 'fsdp'), None, 'expert', None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch']: P(('data', 'fsdp'), 'expert', None, None, 'model')
 model.decoder.transformer.layer.layer[1].feed_forward.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.layer[1].feed_forward.gating.eval_capacity_factor: 2.0
 model.decoder.transformer.layer.layer[1].feed_forward.gating.gating_logit_cap: 0.0

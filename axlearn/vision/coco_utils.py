@@ -332,7 +332,7 @@ def convert_groundtruths_to_coco_dataset(
         max_num_instances = groundtruths["classes"][i].shape[1]
         batch_size = groundtruths["source_id"][i].shape[0]
         for j in range(batch_size):
-            num_instances = groundtruths["num_detections"][i][j]
+            num_instances = int(np.asarray(groundtruths["num_detections"][i][j]).item())
             if num_instances > max_num_instances:
                 logging.warning(
                     "num_groundtruths is larger than max_num_instances, %d v.s. %d",
@@ -340,7 +340,7 @@ def convert_groundtruths_to_coco_dataset(
                     max_num_instances,
                 )
                 num_instances = max_num_instances
-            for k in range(int(num_instances)):
+            for k in range(num_instances):
                 # For multi label data, groundtruth_classes has dimension 1.
                 # For single label data, convert to 1d below.
                 groundtruth_classes = np.atleast_1d(groundtruths["classes"][i][j, k])

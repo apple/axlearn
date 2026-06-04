@@ -51,6 +51,14 @@ def create_default_config(
 class ConfigTest(TestWithTemporaryCWD):
     """Tests config utils."""
 
+    def setUp(self):
+        super().setUp()
+        self.mock_expanduser = mock.patch(
+            "os.path.expanduser", return_value=os.path.join(self._temp_root.name, "user")
+        )
+        self.mock_expanduser.start()
+        self.addCleanup(self.mock_expanduser.stop)
+
     def test_repo_root_or_cwd(self):
         temp_root = os.path.realpath(self._temp_root.name)
         os.makedirs("temp_cwd")
@@ -239,6 +247,14 @@ class ConfigTest(TestWithTemporaryCWD):
 
 class CLITest(TestWithTemporaryCWD):
     """Tests CLI utils."""
+
+    def setUp(self):
+        super().setUp()
+        self.mock_expanduser = mock.patch(
+            "os.path.expanduser", return_value=os.path.join(self._temp_root.name, "user")
+        )
+        self.mock_expanduser.start()
+        self.addCleanup(self.mock_expanduser.stop)
 
     @parameterized.parameters(
         # Test basic required case.

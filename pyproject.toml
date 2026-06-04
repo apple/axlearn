@@ -23,37 +23,33 @@ core = [
     "absl-py==2.3.1",
     "chex==0.1.91",
     "etils[epy]==1.13.0",  # pin to ensure importlib-resources is installed (needed by tensorflow-datasets)
-    "jax==0.8.3",
-    "jaxlib==0.8.3",
-    "ml-dtypes==0.5.3",
+    "jax==0.10.1",
+    "jaxlib==0.10.1",
+    "ml-dtypes==0.5.4",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.9.2",  # for text preprocessing
     "optax==0.2.6",  # Fix for TPU 7x
     "portpicker",
-    "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
-    "protobuf>4",
-    "tensorboard-plugin-profile==2.20.4",
+    "pyarrow>=22.0.0",  # pyarrow < 22.0.0 has protobuf conflicts
+    "protobuf>=6,<7",  # Match the protobuf version used by TensorFlow
+    "tensorboard==2.20",  # As of TensorFlow 2.21 installing TensorBoard is required
+    "tensorboard-plugin-profile==2.22.1",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.19.1.3",
-    "tensorflow-datasets==4.9.9",
-    "tensorflow-io==0.37.3",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow-metadata==1.17.3", # Required by seqio/tfds
-    "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
+    "tensorflow==2.21.0.2",
+    "tensorflow-datasets==4.9.10",
+    "tensorflow-io==0.37.4",
+    "tensorflow-metadata==1.19.0.1", # Required by seqio/tfds
+    "tensorflow_text==2.21.0.1", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.15.0",
     "scipy>=1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.20",  # used for inputs
     "aqtp==0.9.0", # Updated from 0.4.0; compatible with Python 3.10
-    "flax>=0.12.0", # for AQT, param converter and adapter.
+    "flax==0.12.7", # for AQT, param converter and adapter.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
-    "grain==0.2.11", # Grain input processing. 0.2.6 onwards supports macos.
+    "grain==0.2.16", # Grain input processing. 0.2.6 onwards supports macos.
     "tokamax",
-]
-# Apple Silicon dependencies.
-# Need to run `conda install -c apple tensorflow-deps` separately.
-apple-silicon = [
-    "array-record<0.8; platform_machine == 'arm64'", # Prevent mutex.cc lock
 ]
 # Requirements for testing and development.
 dev = [
@@ -81,14 +77,15 @@ gcp = [
     # when loading kube config, hence failing kubernetes client authentication.
     # See also https://github.com/kubernetes-client/python/issues/2333
     "kubernetes==31.0.0",
-    "google-api-core==2.24.1",
+    "google-api-core==2.30.3",
     "google-api-python-client==2.109.0",
-    "google-auth==2.29.0",
+    "google-auth>=2.29.0,<3",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
+    "google-cloud-aiplatform>=1.61.0",
     "google-cloud-storage==2.19.0",
-    "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
+    "google-cloud-compute==1.47.0", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
-    "google-cloud-build==3.24.1",
+    "google-cloud-build==3.36.0",
     "ml-goodput-measurement==0.0.16",
     "pika==1.3.2",  # used by event queue
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
@@ -99,25 +96,13 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.8.3",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.10.1",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.2",  # For JAX+Pathways single-controller accelerator coordinator.
-]
-# Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
-vertexai_tensorboard = [
-    # Required to fix a `distro-info` bug we run into when using `tb_gcp_tensorboard` from
-    # `google_cloud_aiplatform[tensorboard]`. See:
-    # [1] https://bugs.launchpad.net/ubuntu/+source/distro-info/+bug/1991606
-    # [2] https://github.com/pypa/setuptools/issues/3772
-    "setuptools==65.7.0",
-    # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
-    # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
-    "google-cloud-aiplatform[tensorboard]>=1.61.0",
-    "tensorboard",
 ]
 # Dataflow dependencies.
 dataflow = [
-    "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
-    "apache-beam==2.69.0",
+    "pyarrow>=22.0.0",
+    "apache-beam==2.72.0",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
@@ -125,7 +110,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton>=2.1.0",
-    "jax[cuda12]==0.8.3",
+    "jax[cuda12]==0.10.1",
     "nvidia-ml-py==12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",

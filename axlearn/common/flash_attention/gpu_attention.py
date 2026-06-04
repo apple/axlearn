@@ -175,8 +175,9 @@ def _mha_forward_kernel(
     # read, compute, and write all in 2d chunks. 1 element ~= 1 CUDA thread index.
     # q tile has shape [block_q, block_d], block_d >= head_dim and is a power of 2.
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0)
-    q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
+    q_raw = q_ref[...]
+    q = jnp.where(d_mask, q_raw, 0)
+    q_segment_ids = None if s_ref is None else s_ref[curr_q_slice]
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # (Bc == block_k here), and fast over blocks of q (size Br == block_q here).
     # Here we only loop over blocks of kv to process entire kv_seq_len, the loop over
@@ -186,22 +187,22 @@ def _mha_forward_kernel(
     def body(start_k, carry):
         if index_offset_ref is not None:
             # We retrieve the dynamic indices for the current block if offset is provided.
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(index_offset_ref[start_k])
         span_k = start_k * block_k + jnp.arange(block_k)
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0)
+        k = jnp.where(d_mask, k_ref[curr_k_slice, :], 0)
         qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k].
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
         if b_ref is not None:
-            qk += pl.load(b_ref, (slice(None), curr_k_slice))
+            qk += b_ref[:, curr_k_slice]
         qk = jnp.maximum(qk, NEG_INF)
 
         if s_ref is not None or mask_fn is not None:
             mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
-                kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+                kv_segment_ids = s_ref[curr_k_slice]
                 segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
                 mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             # Apply mask to qk.
@@ -217,9 +218,9 @@ def _mha_forward_kernel(
         l_curr = s_curr.sum(axis=-1)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
-        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
+        v = jnp.where(d_mask, v_ref[curr_k_slice, :], 0.0)
         if dropout_rate > 0:
-            dropout_mask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+            dropout_mask = dropout_mask_ref[:, curr_k_slice]
             s_curr = jnp.where(dropout_mask, 0, s_curr / (1 - dropout_rate))
         o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
@@ -240,7 +241,8 @@ def _mha_forward_kernel(
         lse_ref = residual_refs[0]
         lse_ref[...] = m_i + jnp.log(l_i)
     # Write output to dram.
-    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
+    o_final = jnp.where(d_mask, o.astype(o_ref.dtype), 0.0)
+    o_ref[...] = o_final
 
 
 # pylint: disable=unused-argument
@@ -471,43 +473,43 @@ def _mha_backward_kernel_dkdv(
     dv = jnp.zeros([block_k, block_d], dtype=jnp.float32)
     dk = jnp.zeros([block_k, block_d], dtype=jnp.float32)
 
-    v = pl.load(v_ref, (curr_k_slice, slice(None)))
-    k = pl.load(k_ref, (curr_k_slice, slice(None)))
+    v = v_ref[curr_k_slice, :]
+    k = k_ref[curr_k_slice, :]
     span_k = start_k * block_k + jnp.arange(block_k)
-    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_k_slice,))
+    kv_segment_ids = None if s_ref is None else s_ref[curr_k_slice]
 
     def inner_loop_dkdv(start_q, carry):
         if index_offset_ref is not None:
             # Retrieve dynamic index for the current block if offset is provided.
-            start_q = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_q, 1),)))
+            start_q = jnp.sum(index_offset_ref[start_q])
         span_q = start_q * block_q + jnp.arange(block_q)
         dv, dk = carry
         curr_q_slice = pl.dslice(start_q * block_q, block_q)
 
-        q = pl.load(q_ref, (curr_q_slice, slice(None)))
+        q = q_ref[curr_q_slice, :]
         qk = pl.dot(q, k.T, precision=precision)  # type: ignore
         if softmax_scale != 1.0:
             qk *= softmax_scale
         if b_ref is not None:
-            qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
+            qk += b_ref[curr_q_slice, curr_k_slice]
         qk = jnp.maximum(qk, NEG_INF)
 
         if s_ref is not None or mask_fn is not None:
             mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
-                q_segment_ids = pl.load(s_ref, (curr_q_slice,))
+                q_segment_ids = s_ref[curr_q_slice]
                 segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
                 mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             qk = jnp.where(mask, qk, NEG_INF)
 
-        lse = pl.load(lse_ref, (curr_q_slice,))
-        di = pl.load(delta_ref, (curr_q_slice,))
-        do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+        lse = lse_ref[curr_q_slice]
+        di = delta_ref[curr_q_slice]
+        do = do_scaled_ref[curr_q_slice, :]
 
         p = p_dropped = jnp.exp(qk - lse[:, None])
         dp = dp_dropped = pl.dot(do, v.T, precision=precision)  # type: ignore
         if dropout_rate > 0:
-            dropout_mask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            dropout_mask = dropout_mask_ref[curr_q_slice, curr_k_slice]
             p_dropped = jnp.where(dropout_mask, 0, p / (1 - dropout_rate))
             dp = jnp.where(dropout_mask, 0, dp_dropped / (1 - dropout_rate))
         dv = dv + pl.dot(p_dropped.astype(do.dtype).T, do, precision=precision)
@@ -524,8 +526,8 @@ def _mha_backward_kernel_dkdv(
     else:
         dv, dk = lax.fori_loop(0, pl.cdiv(q_seq_len, block_q), inner_loop_dkdv, (dv, dk))
 
-    pl.store(dv_ref, (curr_k_slice, slice(None)), dv.astype(dv_ref.dtype))
-    pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
+    dv_ref[curr_k_slice, :] = dv.astype(dv_ref.dtype)
+    dk_ref[curr_k_slice, :] = dk.astype(dk_ref.dtype)
 
 
 # TODO: Try to reduce positional arguments
@@ -566,32 +568,32 @@ def _mha_backward_kernel_dq(
     span_q = start_q * block_q + jnp.arange(block_q)
     dq = jnp.zeros([block_q, block_d], dtype=jnp.float32)
 
-    q = pl.load(q_ref, (curr_q_slice, slice(None)))
-    q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
-    lse = pl.load(lse_ref, (curr_q_slice,))
-    do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
-    di = pl.load(delta_ref, (curr_q_slice,))
+    q = q_ref[curr_q_slice, :]
+    q_segment_ids = None if s_ref is None else s_ref[curr_q_slice]
+    lse = lse_ref[curr_q_slice]
+    do = do_scaled_ref[curr_q_slice, :]
+    di = delta_ref[curr_q_slice]
 
     def inner_loop_dq(start_k, carry):
         if index_offset_ref is not None:
             # Retrieve dynamic index for the current block if offset is provided.
-            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+            start_k = jnp.sum(index_offset_ref[start_k])
         span_k = start_k * block_k + jnp.arange(block_k)
         dq = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)))
-        v = pl.load(v_ref, (curr_k_slice, slice(None)))
+        k = k_ref[curr_k_slice, :]
+        v = v_ref[curr_k_slice, :]
         qk = pl.dot(q, k.T, precision=precision)
         if softmax_scale != 1.0:
             qk *= softmax_scale
         if b_ref is not None:
-            qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
+            qk += b_ref[curr_q_slice, curr_k_slice]
         qk = jnp.maximum(qk, NEG_INF)
 
         if s_ref is not None or mask_fn is not None:
             mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
-                kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+                kv_segment_ids = s_ref[curr_k_slice]
                 segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
                 mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             qk = jnp.where(mask, qk, NEG_INF)
@@ -599,7 +601,7 @@ def _mha_backward_kernel_dq(
         p = jnp.exp(qk - lse[:, None])
         dp = dp_dropped = pl.dot(do, v.T, precision=precision)
         if dropout_rate > 0:
-            dropout_mask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            dropout_mask = dropout_mask_ref[curr_q_slice, curr_k_slice]
             dp = jnp.where(dropout_mask, 0, dp_dropped / (1 - dropout_rate))
         dp = dp - di[:, None]
         ds = p * dp
@@ -613,7 +615,7 @@ def _mha_backward_kernel_dq(
     else:
         dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_k), inner_loop_dq, (dq))
 
-    pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
+    dq_ref[curr_q_slice, :] = dq.astype(dq_ref.dtype)
 
 
 # TODO: Try to reduce positional arguments

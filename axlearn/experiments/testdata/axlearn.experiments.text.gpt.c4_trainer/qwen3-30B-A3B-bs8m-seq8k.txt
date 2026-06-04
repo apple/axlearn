@@ -22,7 +22,7 @@ evalers['train'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.def
 evalers['train'].input.batcher.prefetch_buffer_size: -1
 evalers['train'].input.input_dispatcher.global_logical_batch_size: 1024
 evalers['train'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-evalers['train'].input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+evalers['train'].input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 evalers['train'].input.is_training: False
 evalers['train'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['train'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -52,7 +52,7 @@ evalers['validation'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_dat
 evalers['validation'].input.batcher.prefetch_buffer_size: -1
 evalers['validation'].input.input_dispatcher.global_logical_batch_size: 1024
 evalers['validation'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-evalers['validation'].input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+evalers['validation'].input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 evalers['validation'].input.is_training: False
 evalers['validation'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['validation'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -77,10 +77,10 @@ input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_
 input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 1024
 input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
-input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
+input.input_dispatcher.partition_spec: P(('data', 'expert', 'fsdp'),)
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
-input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
-input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')
+input.input_partitioner.path_rank_to_partition[(None, 1)]: P(('data', 'expert', 'fsdp'),)
+input.input_partitioner.path_rank_to_partition[(None, 2)]: P(('data', 'expert', 'fsdp'), 'seq')
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -187,9 +187,9 @@ mesh_rules[1][1].config_modifiers[2].exclude_keys[1]: 'tokamax_implementation'
 mesh_rules[1][1].config_modifiers[2].klass: 'axlearn.common.trainer_config_modifier.ReplaceLayerConfigModifier'
 mesh_rules[1][1].config_modifiers[2].source_config.activation: 'nn.relu'
 mesh_rules[1][1].config_modifiers[2].source_config.corr_loss_weight: 0
-mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
-mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['emh']: PartitionSpec(None, ('fsdp', 'seq'), 'model')
-mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['ehm']: PartitionSpec(None, 'model', ('fsdp', 'seq'))
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['me']: P(None, None)
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['emh']: P(None, ('fsdp', 'seq'), 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['ehm']: P(None, 'model', ('fsdp', 'seq'))
 mesh_rules[1][1].config_modifiers[2].source_config.dropout.klass: 'axlearn.common.layers.Dropout'
 mesh_rules[1][1].config_modifiers[2].source_config.gating.eval_capacity_factor: 2.0
 mesh_rules[1][1].config_modifiers[2].source_config.gating.gating_logit_cap: 0.0
@@ -197,7 +197,7 @@ mesh_rules[1][1].config_modifiers[2].source_config.gating.klass: 'axlearn.common
 mesh_rules[1][1].config_modifiers[2].source_config.gating.mask_dtype: 'jax.numpy.int32'
 mesh_rules[1][1].config_modifiers[2].source_config.gating.train_capacity_factor: 2.0
 mesh_rules[1][1].config_modifiers[2].source_config.gmm_backend: <GMMBackend.TOKAMAX: 'TOKAMAX'>
-mesh_rules[1][1].config_modifiers[2].source_config.input_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'fsdp'), 'seq', None)
+mesh_rules[1][1].config_modifiers[2].source_config.input_dim_to_partition_spec['bsm']: P(('data', 'fsdp'), 'seq', None)
 mesh_rules[1][1].config_modifiers[2].source_config.interpret: False
 mesh_rules[1][1].config_modifiers[2].source_config.klass: 'axlearn.common.mixture_of_experts.TransformerFeedForwardDropFreeMoE'
 mesh_rules[1][1].config_modifiers[2].source_config.load_balance_loss_weight: 0.01
@@ -205,9 +205,9 @@ mesh_rules[1][1].config_modifiers[2].source_config.norm.eps: 1e-08
 mesh_rules[1][1].config_modifiers[2].source_config.norm.forward_dtype: 'jax.numpy.float32'
 mesh_rules[1][1].config_modifiers[2].source_config.norm.klass: 'axlearn.common.layers.LayerNorm'
 mesh_rules[1][1].config_modifiers[2].source_config.outer_batch: 1
-mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'fsdp'), 'seq', 'model')
-mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['emh']: PartitionSpec(None, None, 'model')
-mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['ehm']: PartitionSpec(None, 'model', None)
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['bsm']: P(('data', 'fsdp'), 'seq', 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['emh']: P(None, None, 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['ehm']: P(None, 'model', None)
 mesh_rules[1][1].config_modifiers[2].source_config.residual_weight: 1.0
 mesh_rules[1][1].config_modifiers[2].source_config.router_z_loss_weight: 0.0
 mesh_rules[1][1].config_modifiers[2].source_config.stochastic_depth.klass: 'axlearn.common.layers.StochasticDepth'
@@ -267,9 +267,9 @@ model.decoder.transformer.klass: 'axlearn.common.attention.RepeatedTransformerLa
 model.decoder.transformer.layer.feed_forward.activation[0]: 'nn.silu'
 model.decoder.transformer.layer.feed_forward.activation[1]: 'linear'
 model.decoder.transformer.layer.feed_forward.corr_loss_weight: 0
-model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
-model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['emh']: PartitionSpec('expert', ('fsdp', 'seq'), 'model')
-model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['ehm']: PartitionSpec('expert', 'model', ('fsdp', 'seq'))
+model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['me']: P(None, None)
+model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['emh']: P('expert', ('fsdp', 'seq'), 'model')
+model.decoder.transformer.layer.feed_forward.dim_to_mesh_axis_map['ehm']: P('expert', 'model', ('fsdp', 'seq'))
 model.decoder.transformer.layer.feed_forward.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.feed_forward.gating.gating_logit_cap: 0.0
 model.decoder.transformer.layer.feed_forward.gating.klass: 'axlearn.common.mixture_of_experts.TopKDropFreeGating'
@@ -277,7 +277,7 @@ model.decoder.transformer.layer.feed_forward.gating.num_experts_per_token: 8
 model.decoder.transformer.layer.feed_forward.gating.train_capacity_factor: 0
 model.decoder.transformer.layer.feed_forward.hidden_dim: 768
 model.decoder.transformer.layer.feed_forward.input_dim: 2048
-model.decoder.transformer.layer.feed_forward.input_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', None)
+model.decoder.transformer.layer.feed_forward.input_dim_to_partition_spec['bsm']: P(('data', 'expert', 'fsdp'), 'seq', None)
 model.decoder.transformer.layer.feed_forward.interpret: False
 model.decoder.transformer.layer.feed_forward.klass: 'axlearn.common.mixture_of_experts.TransformerFeedForwardDropFreeMoE'
 model.decoder.transformer.layer.feed_forward.load_balance_loss_weight: 0.001
@@ -287,9 +287,9 @@ model.decoder.transformer.layer.feed_forward.norm.klass: 'axlearn.common.layers.
 model.decoder.transformer.layer.feed_forward.num_experts: 128
 model.decoder.transformer.layer.feed_forward.num_groups: 1
 model.decoder.transformer.layer.feed_forward.outer_batch: 1
-model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', 'model')
-model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['emh']: PartitionSpec('expert', None, 'model')
-model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['ehm']: PartitionSpec('expert', 'model', None)
+model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['bsm']: P(('data', 'expert', 'fsdp'), 'seq', 'model')
+model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['emh']: P('expert', None, 'model')
+model.decoder.transformer.layer.feed_forward.output_dim_to_partition_spec['ehm']: P('expert', 'model', None)
 model.decoder.transformer.layer.feed_forward.residual_weight: 1.0
 model.decoder.transformer.layer.feed_forward.router_z_loss_weight: 0.0
 model.decoder.transformer.layer.feed_forward.stochastic_depth.klass: 'axlearn.common.layers.StochasticDepth'
@@ -330,17 +330,17 @@ model.decoder.transformer.layer.self_attention.attention.kv_cache.kv_partition_s
 model.decoder.transformer.layer.self_attention.attention.kv_cache.kv_partition_spec[1]: 'seq'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.kv_partition_spec[2]: 'model'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.kv_partition_spec[3]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), None, None, None)
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh']: P(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh']: P(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts']: P(('data', 'expert', 'fsdp'), None, None, None)
 model.decoder.transformer.layer.self_attention.attention.num_heads: 32
 model.decoder.transformer.layer.self_attention.attention.o_partition_spec[0][0]: 'data'
 model.decoder.transformer.layer.self_attention.attention.o_partition_spec[0][1]: 'expert'
 model.decoder.transformer.layer.self_attention.attention.o_partition_spec[0][2]: 'fsdp'
 model.decoder.transformer.layer.self_attention.attention.o_partition_spec[1]: 'seq'
 model.decoder.transformer.layer.self_attention.attention.o_partition_spec[2]: 'model'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', 'model', None)
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), 'model', 'seq', None)
+model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh']: P(('data', 'expert', 'fsdp'), 'seq', 'model', None)
+model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts']: P(('data', 'expert', 'fsdp'), 'model', 'seq', None)
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[0][0]: 'expert'

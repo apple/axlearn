@@ -8,6 +8,8 @@ from typing import Literal, Optional, Union, cast
 import chex
 import jax
 from jax import numpy as jnp
+from jax._src.mesh import get_abstract_mesh
+from jax.sharding import NamedSharding, PartitionSpec
 
 from axlearn.common import ein_ops
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
@@ -416,6 +418,21 @@ class Conv1D(BaseConv):
         dilation: Optional[Sequence[int]],
     ) -> Tensor:
         cfg = self.config
+        out_sharding = cfg.output_partition_spec
+        if out_sharding is not None:
+            mesh = get_abstract_mesh()
+            if not mesh.empty and not mesh.are_all_axes_auto:
+                weight = self.parameters["weight"]
+                mesh_from_weight = (
+                    getattr(weight.sharding, "mesh", None) if hasattr(weight, "sharding") else None
+                )
+                if mesh_from_weight is not None:
+                    out_sharding = NamedSharding(mesh_from_weight, PartitionSpec(*out_sharding))
+                else:
+                    out_sharding = NamedSharding(mesh, PartitionSpec(*out_sharding))
+            else:
+                out_sharding = None
+
         output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
@@ -424,6 +441,7 @@ class Conv1D(BaseConv):
             rhs_dilation=dilation,
             dimension_numbers=("NWC", "WIO", "NWC"),
             feature_group_count=cfg.num_input_dim_groups,
+            out_sharding=out_sharding,
         )
         if cfg.bias:
             output += self.parameters["bias"]

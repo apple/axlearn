@@ -559,5 +559,73 @@ class SerializerTest(parameterized.TestCase):
         )
 
 
+class MaybeWithS3EndpointTest(parameterized.TestCase):
+    """Tests for `maybe_with_s3_endpoint`."""
+
+    def test_no_env_var(self):
+        spec = {"kvstore": {"driver": "s3", "bucket": "b", "path": "p"}}
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertNotIn(
+                "endpoint", array_serialization.maybe_with_s3_endpoint(spec)["kvstore"]
+            )
+
+    def test_injects_from_aws_endpoint_url_s3(self):
+        spec = {"kvstore": {"driver": "s3", "bucket": "b"}}
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "AWS_ENDPOINT_URL_S3": "https://s3.example.com/",
+                "AWS_ENDPOINT_URL": "https://other.example.com/",
+            },
+            clear=True,
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertEqual(out["kvstore"]["endpoint"], "https://s3.example.com/")
+        # Input must not be mutated.
+        self.assertNotIn("endpoint", spec["kvstore"])
+
+    def test_falls_back_to_aws_endpoint_url(self):
+        spec = {"kvstore": {"driver": "s3", "bucket": "b"}}
+        with mock.patch.dict(
+            "os.environ", {"AWS_ENDPOINT_URL": "https://general.example.com/"}, clear=True
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertEqual(out["kvstore"]["endpoint"], "https://general.example.com/")
+
+    def test_does_not_overwrite_existing_endpoint(self):
+        spec = {
+            "kvstore": {"driver": "s3", "bucket": "b", "endpoint": "https://explicit.example.com/"}
+        }
+        with mock.patch.dict(
+            "os.environ", {"AWS_ENDPOINT_URL": "https://env.example.com/"}, clear=True
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertEqual(out["kvstore"]["endpoint"], "https://explicit.example.com/")
+
+    def test_non_s3_driver_unchanged(self):
+        spec = {"kvstore": {"driver": "gcs", "bucket": "b"}}
+        with mock.patch.dict(
+            "os.environ", {"AWS_ENDPOINT_URL": "https://env.example.com/"}, clear=True
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertNotIn("endpoint", out["kvstore"])
+
+    def test_no_kvstore_key(self):
+        spec = {"driver": "zarr3"}
+        with mock.patch.dict(
+            "os.environ", {"AWS_ENDPOINT_URL": "https://env.example.com/"}, clear=True
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertEqual(out, spec)
+
+    def test_string_kvstore(self):
+        spec = {"kvstore": "s3://bucket/path"}
+        with mock.patch.dict(
+            "os.environ", {"AWS_ENDPOINT_URL": "https://env.example.com/"}, clear=True
+        ):
+            out = array_serialization.maybe_with_s3_endpoint(spec)
+        self.assertEqual(out, spec)
+
+
 if __name__ == "__main__":
     absltest.main()

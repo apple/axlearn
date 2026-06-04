@@ -23,7 +23,7 @@ DenseGeneralBaseLayer instead.
 
 import functools
 from enum import Enum
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import jax
 from absl import logging
@@ -87,7 +87,9 @@ class BaseQuantizedEinsum(BaseLayer):
     a quantized einsum.
     """
 
-    def einsum_maybe_quantized(self, subscripts, *, activation: Tensor, kernel: Tensor) -> Tensor:
+    def einsum_maybe_quantized(
+        self, subscripts, *, activation: Tensor, kernel: Tensor, out_sharding: Optional[Any] = None
+    ) -> Tensor:
         """Implements activation-kernel einsum with quantization (e.g. fakequant, fp8-fp8, etc.)
 
         Args:
@@ -97,6 +99,7 @@ class BaseQuantizedEinsum(BaseLayer):
                 as well as subscript labels of the precise output form.
             activation: Activation tensor.
             kernel: Kernel tensor.
+            out_sharding: Optional output sharding to resolve ambiguities in JAX einsum.
         Returns:
             Output of einsum.
         """
@@ -322,7 +325,9 @@ class QuantizedDotGeneral(BaseQuantizedEinsum):
             preferred_element_type,
         )
 
-    def einsum_maybe_quantized(self, subscripts, *, activation: Tensor, kernel: Tensor) -> Tensor:
+    def einsum_maybe_quantized(
+        self, subscripts, *, activation: Tensor, kernel: Tensor, out_sharding: Optional[Any] = None
+    ) -> Tensor:
         """jnp.einsum which uses hardware accelerated quantization if applicable.
 
         See docstring for jax.numpy.einsum.
@@ -354,6 +359,7 @@ class QuantizedDotGeneral(BaseQuantizedEinsum):
                 prng_key=self.prng_key,
                 lhs_is_activation=not is_swapped,
             ),
+            out_sharding=out_sharding,
         )
         # Apply clipping on output.
         if (
@@ -396,7 +402,12 @@ class DenseGeneralBaseLayer(BaseLayer):
             self._add_child("quantized_dot_general", cfg.quantized_dot_general)
 
     def einsum_maybe_quantized(
-        self, subscript: str, *, activation: Tensor, kernel: Tensor
+        self,
+        subscript: str,
+        *,
+        activation: Tensor,
+        kernel: Tensor,
+        out_sharding: Optional[Any] = None,
     ) -> Tensor:
         """Computes einsum with `layer.quantized_dot_general` if available.
 
@@ -410,10 +421,10 @@ class DenseGeneralBaseLayer(BaseLayer):
         """
         if "quantized_dot_general" in self.children:
             return self.quantized_dot_general.einsum_maybe_quantized(
-                subscript, activation=activation, kernel=kernel
+                subscript, activation=activation, kernel=kernel, out_sharding=out_sharding
             )
         else:
-            return jnp.einsum(subscript, activation, kernel)
+            return jnp.einsum(subscript, activation, kernel, out_sharding=out_sharding)
 
 
 def set_quantized_dot_general_recursively(

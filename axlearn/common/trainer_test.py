@@ -27,6 +27,7 @@ from jax import numpy as jnp
 from jax._src.interpreters import pxla
 from jax.experimental import checkify
 from jax.sharding import PartitionSpec
+from packaging import version
 
 from axlearn.common import (
     debug_utils,
@@ -540,7 +541,7 @@ class TrainerTest(test_utils.TestCase):
                 if not enable_python_cache:
                     # As of Jax >= 0.6.0, enable_python_cache=False no longer affects the
                     # AOT compilation path. We now expect the cache hits to be 0
-                    if jax.__version__ >= "0.6.0":
+                    if version.parse(jax.__version__) >= version.parse("0.6.0"):
                         self.skipTest(
                             "AOT compilation path is not affected by"
                             " 'enable_python_cache' with Jax >= 0.6.0"
@@ -556,7 +557,7 @@ class TrainerTest(test_utils.TestCase):
                 self.assertEqual(compiled_with_options_call_count[0], 2)
             else:
                 if not enable_python_cache:
-                    if jax.__version__ >= "0.6.0":
+                    if version.parse(jax.__version__) >= version.parse("0.6.0"):
                         self.skipTest(
                             "AOT compilation path is not affected by"
                             " 'enable_python_cache' with Jax >= 0.6.0"
@@ -612,7 +613,7 @@ class TrainerTest(test_utils.TestCase):
         # In a single-host environment, both compiled functions should match.
         # Skip this part of the test if Jax >= 0.8.2 as the behavior changes
         # TODO(samuel-andersen): Investigate why this behavior has changed
-        if jax.__version__ < "0.8.2":
+        if version.parse(jax.__version__) < version.parse("0.8.2"):
             self.assertEqual(compiled_without_args.as_text(), compiled_with_input_batch.as_text())
             self.assertEqual(
                 aot_model_analysis(compiled_without_args),
@@ -630,7 +631,7 @@ class TrainerTest(test_utils.TestCase):
             trainer_state=trainer.trainer_state, input_batch=input_batch
         )
         # Skip this part of the test if Jax >= 0.8.2 as the behavior changes
-        if jax.__version__ < "0.8.2":
+        if version.parse(jax.__version__) < version.parse("0.8.2"):
             self.assertEqual(
                 compiled_without_args.as_text(),
                 compiled_with_trainer_state_and_input_batch.as_text(),
@@ -1371,7 +1372,7 @@ class SelectExtendedMeshConfigTest(test_utils.TestCase):
                             remat_policies={
                                 "model.linear": RematSpec(
                                     prevent_cse=True,
-                                    policy=jax.ad_checkpoint.checkpoint_policies.dots_saveable,
+                                    policy=jax.checkpoint_policies.dots_saveable,
                                 ),
                             }
                         ),
