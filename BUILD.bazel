@@ -25,11 +25,13 @@ load("@rules_python_gazelle_plugin//modules_mapping:def.bzl", "modules_mapping")
 
 package(default_visibility = ["//visibility:public"])
 
+# buildifier: leave-alone
 modules_mapping(
     name = "modules_map",
     wheels = all_whl_requirements,
     )
 
+# buildifier: leave-alone
 gazelle_python_manifest(
     name = "gazelle_python_manifest",
     modules_mapping = ":modules_map",
@@ -37,11 +39,13 @@ gazelle_python_manifest(
     requirements = "//:requirements_lock.txt",
     )
 
+# buildifier: leave-alone
 gazelle_binary(
     name = "gazelle_binary",
     languages = ["@rules_python_gazelle_plugin//python"],
     )
 
+# buildifier: leave-alone
 gazelle(
     name = "gazelle",
     gazelle = ":gazelle_binary",
