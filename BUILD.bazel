@@ -47,9 +47,6 @@ gazelle(
     gazelle = ":gazelle_binary",
     )
 
-buildifier(
-    name = "buildifier",
-)
 
 lock(
     name = "requirements",

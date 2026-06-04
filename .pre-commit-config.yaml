@@ -17,12 +17,6 @@ repos:
   - id: ruff-format
 - repo: local
   hooks:
-  - id: bazel-buildifier
-    name: bazel run //:buildifier
-    entry: bazel run //:buildifier
-    language: system
-    pass_filenames: false
-    always_run: true
   - id: bazel-gazelle-python-manifest-test
     name: bazel test //:gazelle_python_manifest.test
     entry: bazel test //:gazelle_python_manifest.test
