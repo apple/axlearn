@@ -27,25 +27,25 @@ package(default_visibility = ["//visibility:public"])
 
 modules_mapping(
     name = "modules_map",
-        wheels = all_whl_requirements,
-)
+    wheels = all_whl_requirements,
+    )
 
 gazelle_python_manifest(
     name = "gazelle_python_manifest",
-        modules_mapping = ":modules_map",
+    modules_mapping = ":modules_map",
     pip_repository_name = "axlearn_pip",
     requirements = "//:requirements_lock.txt",
-)
+    )
 
 gazelle_binary(
     name = "gazelle_binary",
-        languages = ["@rules_python_gazelle_plugin//python"],
-)
+    languages = ["@rules_python_gazelle_plugin//python"],
+    )
 
 gazelle(
     name = "gazelle",
-        gazelle = ":gazelle_binary",
-)
+    gazelle = ":gazelle_binary",
+    )
 
 buildifier(
     name = "buildifier",
