@@ -20,15 +20,15 @@ class Vocabulary(Protocol):
     """A basic text vocab interface, similar to `seqio.Vocabulary`."""
 
     @property
-    def pad_id(self):
+    def pad_id(self) -> int:
         """PAD token ID."""
 
     @property
-    def eos_id(self):
+    def eos_id(self) -> Optional[int]:
         """EOS token ID."""
 
     @property
-    def bos_id(self):
+    def bos_id(self) -> Optional[int]:
         """BOS token ID."""
 
     def encode(self, s: str) -> Sequence[int]:
