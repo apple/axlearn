@@ -25,8 +25,7 @@ from axlearn.common.config import Configurable, config_class
 from axlearn.common.flash_attention.attention_types import FlashAttentionWithShardMapSpecs
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.kv_cache import KVCache
-from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
-from axlearn.common.kv_cache.paged_kv_storage import reconstruct_kv
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache, reconstruct_kv
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Nested, Tensor, validate_contains_paths
 

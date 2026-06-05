@@ -3,23 +3,104 @@
 """A KVCache stores KV tokens in paged format."""
 
 from functools import partial
-from typing import Optional, Union
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
+from jax._src.mesh import thread_resources
+from jax.sharding import PartitionSpec
 
 from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
 from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
-from axlearn.common.kv_cache.paged_kv_storage import (
-    PagedKVStorage,
-    reconstruct_kv,
-    scatter_update_pages,
-    scatter_update_pages_kernel,
-)
 from axlearn.common.module import nowrap
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, get_current_abstract_or_physical_mesh
+
+
+def reconstruct_kv(page_tables: Tensor, pages: Tensor) -> Tensor:
+    """Retrieve key/value from page tables given pages.
+
+    Args:
+        page_tables: [batch_size, pages_per_sequence], specifying page indices.
+        pages: [num_kv_heads, total_num_pages, page_size, head_dim], k/v pages.
+
+    Returns:
+        Retrieved actual key / value of shape [batch_size, kv_seq_len, n_kv_heads, head_dim],
+            where kv_seq_len = pages_per_sequence * page_size.
+    """
+    temp = jnp.einsum("nbpsh->bpsnh", pages.at[:, page_tables].get(mode="fill", fill_value=0))
+    b, _, _, n, h = temp.shape
+    return temp.reshape(b, -1, n, h)
+
+
+def scatter_update_pages(
+    kv_pages: Tensor, kv_proj: Tensor, page_indices: Tensor, key_positions: Tensor
+) -> Tensor:
+    """Scatter kv_proj into kv_pages according to key_positions.
+
+    Args:
+        kv_pages: A tensor of shape [num_heads, num_pages, page_size, head_dim].
+        kv_proj: A tensor of shape [num_heads, batch_size, 1, head_dim].
+        page_indices: A tensor of shape [batch_size, pages_per_batch].
+        key_positions: A tensor of shape [batch_size, 1].
+
+    Returns:
+        A tensor with the same shape as `kv_pages`.
+    """
+    page_size = kv_pages.shape[-2]
+    offset_in_page = key_positions % page_size  # (batch, step)
+    page_idx = key_positions // page_size  # (batch, step)
+    page_idx = jnp.take_along_axis(page_indices, page_idx, axis=1)
+    # unique_indices=True provides 10x faster perf for the scatter kernel on GPU.
+    kv_pages = kv_pages.at[:, page_idx, offset_in_page].set(
+        kv_proj, unique_indices=True, mode="drop"
+    )
+    return kv_pages
+
+
+def scatter_update_pages_kernel(
+    *,
+    kv_pages: Tensor,
+    kv_proj: Tensor,
+    page_indices: Tensor,
+    key_positions: Tensor,
+    shmap_fn: Callable[[Tensor, Tensor, Tensor, Tensor], Tensor],
+) -> Tensor:
+    """Equivalent to `scatter_update_pages` but much faster on TPU and GPU.
+
+    Args:
+        kv_pages: A tensor of shape [num_heads, num_pages, page_size, head_dim].
+        kv_proj: A tensor of shape [num_heads, batch_size, 1, head_dim].
+        page_indices: A tensor of shape [batch_size, pages_per_batch].
+        key_positions: A tensor of shape [batch_size, 1].
+        shmap_fn: A callable that takes in the tensors above and returns an updated `kv_pages` in
+            a shard_map context.
+
+    Returns:
+        A tensor with the same shape as `kv_pages`.
+    """
+    key_positions = key_positions.squeeze(1)
+    mesh = thread_resources.env.physical_mesh
+    num_kv_heads = kv_pages.shape[0]
+    model_axis = (
+        "model" if "model" in mesh.axis_names and num_kv_heads % mesh.shape["model"] == 0 else None
+    )
+    if model_axis not in mesh.axis_names:
+        model_axis = None
+    # pylint: disable-next=too-many-function-args
+    return jax.shard_map(
+        shmap_fn,
+        mesh=get_current_abstract_or_physical_mesh(),
+        in_specs=(
+            PartitionSpec(model_axis, None, None, None),
+            PartitionSpec(model_axis, None, None, None),
+            PartitionSpec(None, None),
+            PartitionSpec(None),
+        ),
+        out_specs=PartitionSpec(model_axis, None, None, None),
+        check_vma=False,
+    )(kv_pages, kv_proj, page_indices, key_positions)
 
 
 class PagedKVCache(KVCache):
@@ -37,25 +118,6 @@ class PagedKVCache(KVCache):
     """
 
     PADDING_PAGE_ID = 0
-
-    @classmethod
-    def as_dense_kv(cls, kv_state: Union[KVState, PagedKVStorage]) -> tuple[Tensor, Tensor]:
-        """Materialise dense `(k, v)` for any paged attention input.
-
-        Handles both the legacy `KVState`-with-populated-`page_indices` emission
-        from today's `extend_step` (reconstructed via `reconstruct_kv`) and the
-        forthcoming `PagedKVStorage` variants (delegated to `.as_dense()`).
-        Plain dense `KVState` (prefill path, `page_indices is None`) falls
-        through to the base implementation.
-        """
-        if isinstance(kv_state, PagedKVStorage):
-            return kv_state.as_dense()
-        if kv_state.page_indices is not None:
-            return (
-                reconstruct_kv(kv_state.page_indices, kv_state.k_proj),
-                reconstruct_kv(kv_state.page_indices, kv_state.v_proj),
-            )
-        return super().as_dense_kv(kv_state)
 
     @nowrap
     def init_states(self, shape: KVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
@@ -203,3 +265,13 @@ class PagedKVCache(KVCache):
             key_positions=key_positions,
             page_indices=page_indices,
         )
+
+    @classmethod
+    def maybe_normalize_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
+        """See `BaseKVCache.maybe_normalize_kv`."""
+        if kv_state.page_indices is None:
+            # page_indices is None during prefill.
+            return kv_state.k_proj, kv_state.v_proj
+        k_proj = reconstruct_kv(kv_state.page_indices, kv_state.k_proj)
+        v_proj = reconstruct_kv(kv_state.page_indices, kv_state.v_proj)
+        return k_proj, v_proj

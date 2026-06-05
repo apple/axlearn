@@ -51,20 +51,9 @@ py_library(
         ":base_kv_cache",
         ":paged_kv_cache_gpu_kernel",
         ":paged_kv_cache_tpu_kernel",
-        ":paged_kv_storage",
         "//axlearn/common:base_layer",
         "//axlearn/common:config",
         "//axlearn/common:module",
-        "//axlearn/common:utils",
-        "@axlearn_pip//jax",
-    ],
-)
-
-# Paged KV storage types and layout primitives.
-py_library(
-    name = "paged_kv_storage",
-    srcs = ["paged_kv_storage.py"],
-    deps = [
         "//axlearn/common:utils",
         "@axlearn_pip//jax",
     ],
@@ -100,7 +89,6 @@ py_library(
         ":paged_kv_cache",
         ":paged_kv_cache_gpu_kernel",
         ":paged_kv_cache_tpu_kernel",
-        ":paged_kv_storage",
         ":sliding_window_kv_cache",
     ],
 )
@@ -124,23 +112,10 @@ py_test(
     deps = [
         ":kv_cache",
         ":paged_kv_cache",
-        ":paged_kv_storage",
         "//axlearn/common:test_utils",
         "@axlearn_pip//absl_py",
         "@axlearn_pip//jax",
         "@axlearn_pip//pytest",
-    ],
-)
-
-py_test(
-    name = "paged_kv_storage_test",
-    srcs = ["paged_kv_storage_test.py"],
-    deps = [
-        ":base_kv_cache",
-        ":paged_kv_storage",
-        "//axlearn/common:test_utils",
-        "@axlearn_pip//absl_py",
-        "@axlearn_pip//jax",
     ],
 )
 

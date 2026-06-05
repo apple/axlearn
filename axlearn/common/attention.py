@@ -2143,7 +2143,7 @@ class MultiheadAttention(BaseLayer):
         del mode
         # Not all subclasses have kv_cache.
         if hasattr(self, "kv_cache"):
-            k_proj, v_proj = self.kv_cache.as_dense_kv(kv_state)
+            k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
         else:
             k_proj, v_proj = kv_state.k_proj, kv_state.v_proj
         # KV cache may cast them in lower precision.
@@ -2477,7 +2477,7 @@ class SigmoidAttention(MultiheadAttention):
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
-        k_proj, v_proj = self.kv_cache.as_dense_kv(kv_state)
+        k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
         cfg = self.config
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)

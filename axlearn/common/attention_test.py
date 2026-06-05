@@ -2688,7 +2688,9 @@ class MultiheadAttentionTest(TestCase):
             assert decoder_output.shape == forward_outputs.data.shape
             assert decoder_probs.shape == forward_outputs.probs.shape
             assert_allclose(decoder_probs, forward_outputs.probs, atol=1e-6)
-            test_k_proj, test_v_proj = layer.kv_cache.as_dense_kv(extend_step_outputs.kv_state)
+            test_k_proj, test_v_proj = layer.kv_cache.maybe_normalize_kv(
+                extend_step_outputs.kv_state
+            )
             self.assertNestedAllClose(test_k_proj, forward_outputs.kv_state.k_proj, atol=1e-6)
             self.assertNestedAllClose(test_v_proj, forward_outputs.kv_state.v_proj, atol=1e-6)
 

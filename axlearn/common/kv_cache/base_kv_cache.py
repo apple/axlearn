@@ -115,10 +115,11 @@ class BaseKVCache(BaseLayer):
         raise NotImplementedError(type(self))
 
     @classmethod
-    def as_dense_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
-        """Return a dense `(k_proj, v_proj)` pair from a dense `KVState`.
+    def maybe_normalize_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
+        """Normalize the KV shape if they're not already normalized.
 
-        Subclasses that emit paged or otherwise non-dense storage override this
-        to materialise `(k, v)` on demand.
+        Returns:
+            A tuple of [k_proj, v_proj], each with shape [batch_size, seq_len, kv_heads, head_dim].
         """
+        assert kv_state.page_indices is None
         return kv_state.k_proj, kv_state.v_proj
