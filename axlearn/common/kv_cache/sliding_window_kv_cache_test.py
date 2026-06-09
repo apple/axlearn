@@ -8,7 +8,13 @@ import pytest
 from absl.testing import absltest, parameterized
 from jax.sharding import PartitionSpec
 
-from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
+from axlearn.common.attention import MultiheadAttention
+from axlearn.common.attention_bias import SlidingWindowAttentionBias
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.sliding_window_kv_cache import (
+    SlidingWindowKVCache,
+    enable_sliding_window_attention,
+)
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import sequence_mask
 
@@ -147,6 +153,29 @@ class SlidingWindowKVCacheTest(TestCase):
         self.assertEqual(state["key_positions"].shape, (batch, cached_kv_length))
         kp_spec = state["key_positions"].sharding.spec
         self.assertEqual(kp_spec, PartitionSpec("data"))
+
+
+class FunctionsTest(TestCase):
+    """Tests `enable_sliding_window_attention` config rewriting."""
+
+    def test_enable_sliding_window_attention(self):
+        partition_spec = (("data",), None, "model", None)
+        cfg = MultiheadAttention.default_config().set(
+            name="attn", query_dim=8, key_dim=8, value_dim=8, num_heads=2
+        )
+        cfg.kv_cache = KVCache.default_config().set(
+            cache_dtype=jnp.bfloat16, kv_partition_spec=partition_spec
+        )
+        sliding_window_size = 4
+        out = enable_sliding_window_attention(cfg, sliding_window_size)
+
+        self.assertIs(out, cfg)  # in-place modification.
+        self.assertEqual(out.kv_cache.klass, SlidingWindowKVCache)
+        self.assertEqual(out.kv_cache.cached_kv_length, sliding_window_size)
+        self.assertEqual(out.kv_cache.cache_dtype, jnp.bfloat16)
+        self.assertEqual(out.kv_cache.kv_partition_spec, partition_spec)
+        self.assertEqual(out.mask.klass, SlidingWindowAttentionBias)
+        self.assertEqual(out.mask.sliding_window_size, sliding_window_size)
 
 
 if __name__ == "__main__":

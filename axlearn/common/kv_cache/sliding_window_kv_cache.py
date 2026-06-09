@@ -168,13 +168,11 @@ def enable_sliding_window_attention(
     Returns:
         The in-place modified MultiheadAttention Config with sliding window attention enabled.
     """
-    if cfg.kv_cache is not None:
-        cache_dtype = cfg.kv_cache.cache_dtype
-    else:
-        cache_dtype = None
     cfg.set(
         kv_cache=SlidingWindowKVCache.default_config().set(
-            cache_dtype=cache_dtype, cached_kv_length=sliding_window_size
+            cached_kv_length=sliding_window_size,
+            cache_dtype=cfg.kv_cache.cache_dtype,
+            kv_partition_spec=cfg.kv_cache.kv_partition_spec,
         ),
         mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
     )
