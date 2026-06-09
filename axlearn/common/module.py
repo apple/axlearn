@@ -331,9 +331,18 @@ def propagate_repeated_output_collections(
             else:
                 rest = jax.tree.map(lambda x: x[1:], summaries)
 
+                def _accumulate_leaf(a, b):
+                    if isinstance(a, Summary):
+                        return a.accumulate(b)
+                    # Raw Tensor / scalar leaves are summed across iterations.
+                    # `add_summary` accepts `Union[Summary, Tensor, Summable]`, and only
+                    # `Summary` instances define `.accumulate()`; for the rest, mirror
+                    # the convention in `causal_lm._metrics_with_scan_chunks.aggregate`.
+                    return a + b
+
                 def _accumulate(carry, iter_x):
                     merged = jax.tree.map(
-                        lambda a, b: a.accumulate(b),
+                        _accumulate_leaf,
                         carry,
                         iter_x,
                         is_leaf=lambda x: isinstance(x, Summary),

@@ -1014,6 +1014,66 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 remat_kwargs=dict(prevent_cse=True),
             )
 
+    def test_merge_summaries_mixed_summary_and_tensor(self):
+        """`merge_summaries=True` must accumulate WeightedSummary via .accumulate()
+        and raw Tensor / scalar leaves via summation, mirroring the convention in
+        `causal_lm._metrics_with_scan_chunks.aggregate`."""
+        num_iters = 3
+        child_name_prefix = "scan"
+
+        def fn(carry_i, x_i):
+            ctx = current_context()
+            assert ctx is not None
+            # WeightedSummary leaf — accumulates via .accumulate() (weighted mean).
+            ctx.add_summary("weighted", WeightedSummary(x_i.mean(), x_i.size))
+            # Raw scalar Tensor leaf — should accumulate via `+` (sum).
+            ctx.add_summary("scalar", x_i.sum().astype(jnp.float32))
+            return carry_i + 1, x_i
+
+        xs = {"xs": jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(2, jnp.int32)}
+
+        with self._dummy_context() as ctx:
+            scan_in_context(
+                fn,
+                carry=jnp.zeros(1, dtype=jnp.int32),
+                xs=xs,
+                child_name_prefix=child_name_prefix,
+                merge_summaries=True,
+            )
+            merged = ctx.output_collection.summaries[child_name_prefix]
+
+        # Per-iter values are x_i = [i, i] (shape [2]):
+        #   weighted: mean=i, weight=2 for i in 0..num_iters-1.
+        #     Σ(meanᵢ·wᵢ)/Σwᵢ = (0·2 + 1·2 + 2·2) / 6 = 1.0; total weight = 6.
+        #   scalar:   sum=2i, summed across iters = 2·(0+1+2) = 6.
+        self.assertNestedEqual(WeightedSummary(jnp.float32(1.0), jnp.int32(6)), merged["weighted"])
+        self.assertNestedEqual(jnp.float32(6.0), merged["scalar"])
+
+    def test_merge_summaries_single_iter_skips_accumulator(self):
+        """The `num_children == 1` short-circuit in propagate_repeated_output_collections
+        bypasses `_accumulate` entirely, so a raw-Tensor summary works even pre-fix.
+        This pins that behavior so a future refactor doesn't accidentally drop it."""
+        child_name_prefix = "scan"
+
+        def fn(carry_i, x_i):
+            current_context().add_summary("scalar", x_i.sum().astype(jnp.float32))
+            return carry_i + 1, x_i
+
+        xs = {"xs": jnp.arange(1, dtype=jnp.int32)[:, None] * jnp.ones(2, jnp.int32)}
+
+        with self._dummy_context() as ctx:
+            scan_in_context(
+                fn,
+                carry=jnp.zeros(1, dtype=jnp.int32),
+                xs=xs,
+                child_name_prefix=child_name_prefix,
+                merge_summaries=True,
+            )
+            self.assertNestedEqual(
+                jnp.float32(0.0),
+                ctx.output_collection.summaries[child_name_prefix]["scalar"],
+            )
+
 
 if __name__ == "__main__":
     absltest.main()
