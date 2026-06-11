@@ -23,6 +23,7 @@ from typing import Callable, Literal, Optional, Sequence, Type, Union
 
 import attr
 import jax
+import numpy as np
 from jax import custom_vjp
 from jax import numpy as jnp
 
@@ -30,6 +31,7 @@ from axlearn.common import learner, optimizers
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import InstantiableConfig, config_class, config_for_function
 from axlearn.common.param_init import constant_initializer
+from axlearn.common.summary import CallbackSummary, ImageSummary
 from axlearn.common.utils import Nested, Tensor
 
 DEFAULT_PERCENTILES = (50, 99.9, 99.99, 99.999)
@@ -59,7 +61,7 @@ def compute_grad_percentile_no_clip_fn(
 def _top_k_clipping(g: Tensor, k: int = 4, method: Literal["approx", "topk", "sort"] = "approx"):
     per_token_norm = jnp.linalg.norm(g.astype(jnp.float32), axis=-1)
     flat_norm = jnp.ravel(per_token_norm)
-    assert 2 <= k < len(flat_norm), "k must be >= 2 and < token count."
+    assert 1 <= k < len(flat_norm), "k must be >= 1 and < token count."
 
     if method == "approx":
         topk, ids = jax.lax.approx_max_k(flat_norm, k, recall_target=0.99)
@@ -80,8 +82,7 @@ def _top_k_clipping(g: Tensor, k: int = 4, method: Literal["approx", "topk", "so
 
 
 def top_k_clip_fn(
-    k: int = 4,
-    method: Literal["approx", "topk", "sort"] = "approx",
+    k: int = 4, method: Literal["approx", "topk", "sort"] = "approx", log_pos: bool = False
 ) -> Callable[[Tensor], tuple[Tensor, Tensor]]:
     """Returns an activation gradient clipping function that zeros out tokens
     whose gradient norm is among the top-k largest in a batch.
@@ -92,16 +93,42 @@ def top_k_clip_fn(
             - approx: use ``jax.lax.approx_max_k``
             - topk: use ``jax.lax.top_k``
             - sort: use sorting to find top k
+        log_pos: whether to log clipped token positions in stats
 
     Returns:
         A function mapping gradient tensor to (clipped gradient, top-k norms).
     """
 
     def fn(g: Tensor) -> tuple[Tensor, Tensor]:
-        clipped, topk, _ = _top_k_clipping(g, k, method)
-        return clipped, topk
+        clipped, topk, pos = _top_k_clipping(g, k, method)
+        if log_pos:
+            # Convert token positions (ints) to be representable by bf16
+            pos = encode_int32_to_bf16_bytes(pos)
+            stats = jnp.concatenate([topk[None, :], pos], axis=0)
+        else:
+            stats = topk
+        return clipped, stats
 
     return fn
+
+
+def encode_int32_to_bf16_bytes(x: jnp.ndarray) -> jnp.ndarray:
+    """
+    Encode an int32 array of shape (k,) into a bfloat16 array of shape (4, k),
+    using 4 exact base-256 digits (bytes). This is helpful to convert token positions
+    (large ints) to be representable by bfloat16, which is the trainer precision.
+    The max consecutive int this function can represent is the same as that of
+    int32 (2^31−1).
+    """
+    x = x.astype(jnp.int32)
+    # Reinterpret the same 32 bits as unsigned, without changing the bit pattern.
+    ux = jax.lax.bitcast_convert_type(x, jnp.uint32)
+
+    d0 = ((ux >> 0) & 0xFF).astype(jnp.bfloat16)
+    d1 = ((ux >> 8) & 0xFF).astype(jnp.bfloat16)
+    d2 = ((ux >> 16) & 0xFF).astype(jnp.bfloat16)
+    d3 = ((ux >> 24) & 0xFF).astype(jnp.bfloat16)
+    return jnp.stack([d0, d1, d2, d3], axis=0)
 
 
 def gradient_clipping_impl(
@@ -156,6 +183,79 @@ def gradient_clipping_impl(
     return clipped_g, total_stats
 
 
+def _default_top_norms_from_stats(stats: Tensor) -> Tensor:
+    return stats[0, :] if stats.ndim > 1 else stats
+
+
+def _default_token_pos_from_stats(stats: Tensor) -> Tensor:
+    return stats[1:, :] if stats.ndim > 1 else jnp.array([])
+
+
+def default_stats_logging_fn(
+    log_pos: bool = False,
+    top_norms_fn: Callable[[Tensor], Tensor] = _default_top_norms_from_stats,
+    token_pos_fn: Callable[[Tensor], Tensor] = _default_token_pos_from_stats,
+) -> Callable[["GradientMonitorAndClipLayer", Tensor], None]:
+    """Returns the default `stats_log_fn` for `GradientMonitorAndClipLayer`.
+
+    The returned function is called as `fn(layer, stats)` (the layer is bound
+    via `functools.partial` in `GradientMonitorAndClipLayer.__init__`).
+
+    Args:
+        log_pos: whether to log clipped token positions. `stats` from clip_fn must carry
+            token positions data for this to work.
+        top_norms_fn: extracts the top-norms tensor from `stats`.
+        token_pos_fn: extracts the (encoded) token-position tensor from `stats`.
+            Only consulted when `log_pos=True`.
+    """
+
+    def log_clipped_token_positions(layer: "GradientMonitorAndClipLayer", token_pos: Tensor):
+        """Logs (encoded) clipped token positions to tensorboard. Due to tensorboard
+        constraints, the value is logged as a string instead of a tensor."""
+
+        def _bytes_to_string(pos: np.ndarray) -> str:
+            """Produces strings like
+            255 127 0 42
+            255 255 0 0
+            127 0 0 0
+            0 0 0 0
+            """
+            return "\n".join(" ".join(str(int(x)) for x in row) for row in pos)
+
+        layer.add_summary("clipped_token_pos", CallbackSummary(_bytes_to_string, token_pos))
+
+    def log_top_grad_norms(layer: "GradientMonitorAndClipLayer", top_norms: Tensor):
+        # Difference between `top_norms` and `top_norms_hist`: `add_summary(name, tensor)`
+        # compresses `tensor` into a 30-bin histogram, which discards original values.
+        # When token positions are also logged we keep raw per-token values via
+        # ImageSummary, with `max_norm`/`clip_threshold` allowing inversion at read time.
+        if log_pos:
+            max_norm, clip_threshold = top_norms[0], top_norms[-1]  # reverse-sorted
+            layer.add_summary("max_norm", max_norm)
+            layer.add_summary("clip_threshold", clip_threshold)
+            normed_top_norms = jnp.where(
+                max_norm > clip_threshold,
+                (top_norms - clip_threshold) / (max_norm - clip_threshold),
+                0.0,  # use dummy value 0.0 if max_norm == clip_threshold
+            )
+            layer.add_summary("top_norms", ImageSummary(normed_top_norms[None, None, :, None]))
+        else:
+            layer.add_summary("top_norms_hist", top_norms)
+
+    def fn(layer: "GradientMonitorAndClipLayer", stats: Tensor) -> None:
+        if log_pos:
+            token_pos = token_pos_fn(stats)
+            if token_pos.size == 0:
+                raise ValueError(
+                    "`log_pos=True` but `token_pos_fn` produced an empty tensor; consider "
+                    "syncing `clip_fn.log_pos`, `stats_log_fn.log_pos`, and `stats_shape`."
+                )
+            log_clipped_token_positions(layer, token_pos)
+        log_top_grad_norms(layer, top_norms_fn(stats))
+
+    return fn
+
+
 class GradientMonitorAndClipLayer(BaseLayer):
     """
     Class for monitoring and modifying activation gradient ∂L/∂y of any layer y = f(x, θ).
@@ -177,10 +277,16 @@ class GradientMonitorAndClipLayer(BaseLayer):
         supported_paths: Sequence[str] = GRADIENT_CLIPPING_PATHS
         stats_shape: tuple = (4,)
         clip_fn: InstantiableConfig = config_for_function(top_k_clip_fn)
+        stats_log_fn: InstantiableConfig = config_for_function(default_stats_logging_fn)
 
     def __init__(self, cfg, *, parent):
         super().__init__(cfg, parent=parent)
+        # Auto-sync stats_log_fn to decide whether to log positions based on clip_fn settings
+        if hasattr(cfg.clip_fn, "log_pos") and hasattr(cfg.stats_log_fn, "log_pos"):
+            cfg.stats_log_fn.log_pos = cfg.clip_fn.log_pos
         self._clip_fn = cfg.clip_fn.instantiate()
+        # Bind `self` so stats_log_fn can call self.add_summary().
+        self._stats_log_fn = functools.partial(cfg.stats_log_fn.instantiate(), self)
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -223,7 +329,7 @@ class GradientMonitorAndClipLayer(BaseLayer):
     def forward(self, x):
         # Records local gradient stats from the PREVIOUS bwd pass.
         previous_stats = self.parameters["stats"]
-        self.add_summary("top_norms", previous_stats)
+        self._stats_log_fn(previous_stats)
 
         # Pass previous_stats because we need to return NEW stats as its gradient.
         x = self.make_clip_gradient_fn()(x, previous_stats)

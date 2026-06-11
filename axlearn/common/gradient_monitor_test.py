@@ -20,6 +20,7 @@ from axlearn.common.gradient_monitor import (
     compute_grad_percentile_no_clip_fn,
     convert_to_monitored_layer_config,
     create_monitored_layer_class,
+    default_stats_logging_fn,
     gradient_clipping_impl,
     gradient_monitoring_learner_cfg_modifier,
     top_k_clip_fn,
@@ -253,7 +254,7 @@ class GradientMonitorTest(TestCase):
         self.assertNestedAllClose(base_output, monitored_output)
 
         # Verify stats summary was added to monitored layer
-        self.assertIn("top_norms", output_collection.summaries["gradient_monitor"])
+        self.assertIn("top_norms_hist", output_collection.summaries["gradient_monitor"])
 
     @parameterized.parameters(None, 0.999)
     def test_stats_collection(self, ema_decay):
@@ -329,7 +330,7 @@ class GradientMonitorTest(TestCase):
             )
 
             # Check stats correctly updated.
-            grad_stats_summary = summaries["gradient_monitor"]["top_norms"]
+            grad_stats_summary = summaries["gradient_monitor"]["top_norms_hist"]
             grad_stats_param = model_params["gradient_monitor"]["stats"]
             assert float(grad_stats_param[0]) == mock_grad_stats[iteration], (
                 "Monitoring layer param should be updated to gradient_stats of current batch."
@@ -545,6 +546,40 @@ class GradientMonitorTest(TestCase):
         self.assertLess(
             float(jnp.linalg.norm(grads_2["weight"])), float(jnp.linalg.norm(grads_1["weight"]))
         )
+
+    def test_default_stats_logging_fn_with_top_k_clip_fn(self):
+        """End-to-end check that top_k_clip_fn output feeds default_stats_logging_fn."""
+
+        class _Stub:
+            def __init__(self):
+                self.summaries = {}
+
+            def add_summary(self, name, value):
+                self.summaries[name] = value
+
+        k, g = 3, jax.random.normal(jax.random.PRNGKey(0), (2, 8, 4))
+
+        # log_pos=True: stats has shape (5, k); k tokens are zeroed; 4 summaries emitted.
+        clipped, stats = top_k_clip_fn(k=k, log_pos=True)(g)
+        self.assertEqual(stats.shape, (5, k))
+        self.assertEqual(int(jnp.sum(jnp.linalg.norm(clipped, axis=-1) == 0)), k)
+        stub = _Stub()
+        default_stats_logging_fn(log_pos=True)(stub, stats)
+        self.assertEqual(
+            set(stub.summaries),
+            {"clipped_token_pos", "max_norm", "clip_threshold", "top_norms"},
+        )
+
+        # log_pos=False: stats has shape (k,); a single histogram summary is emitted.
+        _, stats_no_pos = top_k_clip_fn(k=k, log_pos=False)(g)
+        self.assertEqual(stats_no_pos.shape, (k,))
+        stub = _Stub()
+        default_stats_logging_fn(log_pos=False)(stub, stats_no_pos)
+        self.assertEqual(set(stub.summaries), {"top_norms_hist"})
+
+        # Misconfiguration: log_pos=True but stats has no token-position rows.
+        with self.assertRaisesRegex(ValueError, "log_pos=True"):
+            default_stats_logging_fn(log_pos=True)(_Stub(), jnp.zeros((1, k)))
 
 
 if __name__ == "__main__":
