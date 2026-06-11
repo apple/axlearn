@@ -58,6 +58,7 @@ from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.trainer import (
     SpmdTrainer,
     TrainerState,
+    UndefinedLossException,
     aot_model_analysis,
     select_mesh_config,
 )
@@ -329,6 +330,43 @@ class DummyStateBuilder(TrainerStateBuilder):
             ),
             built_keys=built_keys,
         )
+
+
+class NanForwardModel(BaseModel):
+    """A model that returns NaN in the forward pass."""
+
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
+        # Ensure we trigger a checkify error.
+        return math.nan + jnp.asarray(0), {}
+
+
+class InfForwardModel(BaseModel):
+    """A model that returns inf in the forward pass."""
+
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
+        return math.inf + jnp.asarray(0), {}
+
+
+class ConstantForwardModel(BaseModel):
+    """A model that returns a constant finite loss."""
+
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
+        return jnp.asarray(1.0), {}
+
+
+class NanInitModel(BaseModel):
+    """A model that initializes its parameter to NaN."""
+
+    def initialize_parameters_recursively(
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
+    ) -> NestedTensor:
+        # Ensure we trigger a checkify error.
+        return dict(
+            a=math.nan + jnp.asarray(0),
+        )
+
+    def create_parameter_specs_recursively(self) -> NestedParameterSpec:
+        return dict(a=ParameterSpec(shape=()))
 
 
 class TrainerTest(test_utils.TestCase):
@@ -1315,6 +1353,40 @@ class TrainerTest(test_utils.TestCase):
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         self.assertEqual(partition_spec, trainer.input.partition_spec)
 
+    @parameterized.parameters(
+        NanForwardModel.default_config(),
+        InfForwardModel.default_config(),
+    )
+    def test_undefined_loss_raises(self, model_cfg: BaseModel.Config):
+        """Tests that training raises UndefinedLossException when loss is non-finite."""
+        cfg = self._trainer_config()
+        cfg.model = model_cfg.set(dtype=jnp.float32)
+        cfg.max_step = 100
+        trainer = cfg.instantiate(parent=None)
+        with self.assertRaises(UndefinedLossException):
+            trainer.run(prng_key=jax.random.PRNGKey(0))
+
+    def test_finite_loss_does_not_raise(self):
+        """Tests that training does not raise when loss is finite."""
+        cfg = self._trainer_config()
+        cfg.model = ConstantForwardModel.default_config().set(dtype=jnp.float32)
+        cfg.max_step = 101
+        trainer = cfg.instantiate(parent=None)
+        trainer.run(prng_key=jax.random.PRNGKey(0))
+
+    @parameterized.parameters(
+        NanForwardModel.default_config(),
+        InfForwardModel.default_config(),
+    )
+    def test_ignore_undefined_loss(self, model_cfg: BaseModel.Config):
+        """Tests that training does not raise when ignore_undefined_loss is True."""
+        cfg = self._trainer_config()
+        cfg.model = model_cfg.set(dtype=jnp.float32)
+        cfg.learner.ignore_undefined_loss = True
+        cfg.max_step = 100
+        trainer = cfg.instantiate(parent=None)
+        trainer.run(prng_key=jax.random.PRNGKey(0))
+
 
 class SelectMeshConfigTest(test_utils.TestCase):
     def test_select_mesh_config(self):
@@ -1482,29 +1554,6 @@ class CompatibilityTest(test_utils.TestCase):
             chex.assert_trees_all_equal(
                 dataclasses.asdict(chex_data), dataclasses.asdict(struct_data)
             )
-
-
-class NanForwardModel(BaseModel):
-    """A model that returns NaN in the forward pass."""
-
-    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
-        # Ensure we trigger a checkify error.
-        return math.nan + jnp.asarray(0), {}
-
-
-class NanInitModel(BaseModel):
-    """A model that initializes its parameter to NaN."""
-
-    def initialize_parameters_recursively(
-        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
-    ) -> NestedTensor:
-        # Ensure we trigger a checkify error.
-        return dict(
-            a=math.nan + jnp.asarray(0),
-        )
-
-    def create_parameter_specs_recursively(self) -> NestedParameterSpec:
-        return dict(a=ParameterSpec(shape=()))
 
 
 class DebuggingTest(test_utils.TestCase):

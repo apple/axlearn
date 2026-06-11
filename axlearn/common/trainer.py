@@ -76,6 +76,14 @@ class TrainerState(NamedTuple):
     learner: Union[NestedTensor, Nested[TensorSpec], Nested[jax.sharding.NamedSharding]]
 
 
+class UndefinedLossException(Exception):
+    """
+    Raised when loss becomes undefined.
+    """
+
+    pass
+
+
 # pylint: disable-next=too-many-instance-attributes
 class SpmdTrainer(Module):
     """A trainer implementation that supports partitioning of computation and data with GSPMD."""
@@ -1152,11 +1160,16 @@ class SpmdTrainer(Module):
 
         n = self._config.log_every_n_steps or 100
         if self.step % n == 0 or 0 <= self.step <= 5:
+            loss = outputs["loss"]
             self._step_log(
                 "loss=%s aux=%s",
-                outputs["loss"],
+                loss,
                 jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
+            if not self.learner.handles_undefined_loss() and not jnp.isfinite(loss):
+                raise UndefinedLossException(
+                    f"Detected undefined loss at step {self.step} with value {loss}"
+                )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
         # Aggregate summaries across evalers.

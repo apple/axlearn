@@ -95,6 +95,7 @@ input.source.train_shuffle_buffer_size: 1024
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
+learner.ignore_undefined_loss: False
 learner.klass: 'axlearn.common.learner.Learner'
 learner.optimizer.decouple_weight_decay: False
 learner.optimizer.fn: 'axlearn.common.optimizers.sgd_optimizer'

@@ -1706,6 +1706,23 @@ class CompositeLearnerTest(TestCase):
                 )
             )
 
+    def test_handles_undefined_loss(self):
+        opt_cfg = config_for_function(sgd_optimizer).set(
+            learning_rate=0.1, decouple_weight_decay=True
+        )
+        cfg = CompositeLearner.default_config().set(
+            name="test",
+            rules=[(".*a.*", "a"), (".*b.*", "b")],
+            learners={
+                "a": Learner.default_config().set(optimizer=opt_cfg, ignore_undefined_loss=True),
+                "b": Learner.default_config().set(optimizer=opt_cfg, ignore_undefined_loss=False),
+            },
+        )
+        self.assertFalse(cfg.instantiate(parent=None).handles_undefined_loss())
+
+        cfg.learners["b"].ignore_undefined_loss = True
+        self.assertTrue(cfg.instantiate(parent=None).handles_undefined_loss())
+
 
 if __name__ == "__main__":
     absltest.main()

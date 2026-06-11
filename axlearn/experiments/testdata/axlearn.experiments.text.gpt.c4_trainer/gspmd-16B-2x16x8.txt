@@ -101,6 +101,7 @@ input.source.vocab_cfg.sentencepiece_model_name: 'bpe_32k_c4.model'
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
+learner.ignore_undefined_loss: False
 learner.klass: 'axlearn.common.learner.Learner'
 learner.optimizer.apply_scale_by_trust_ratio: False
 learner.optimizer.b1: 0.9

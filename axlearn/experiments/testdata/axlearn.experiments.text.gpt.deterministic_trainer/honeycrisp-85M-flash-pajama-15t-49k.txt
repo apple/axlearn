@@ -64,6 +64,7 @@ input.source.train_shuffle_files: False
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
+learner.ignore_undefined_loss: True
 learner.klass: 'axlearn.common.learner.Learner'
 learner.optimizer.drop_norm: 100
 learner.optimizer.eps: 1e-08

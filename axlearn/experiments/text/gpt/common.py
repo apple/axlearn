@@ -495,7 +495,7 @@ def adastar_learner_config(
         drop_norm=100,
         max_norm=1,
     )
-    return learner.Learner.default_config().set(optimizer=optimizer_cfg)
+    return learner.Learner.default_config().set(optimizer=optimizer_cfg, ignore_undefined_loss=True)
 
 
 def tfds_read_config() -> InstantiableConfig:

@@ -141,6 +141,17 @@ class BaseLearner(LearnerModule):
         """
         raise NotImplementedError(type(self))
 
+    def handles_undefined_loss(self) -> bool:
+        """
+        Signals if this learner will actively handle undefined losses. An example
+        is to skip the step so that the undefined loss is not propagated to the
+        weights.
+
+        Returns:
+            `True` if the learner handles undefined loss and `False` otherwise.
+        """
+        return False
+
 
 class Learner(BaseLearner):
     """The learner module."""
@@ -178,6 +189,12 @@ class Learner(BaseLearner):
         #     steps=gradient_accumulation_steps,
         #     metric_accumulator=MetricAccumulator.default_config())
         forward_fn_transformation: Optional[ConfigOr[ForwardFnTransformation]] = None
+
+        # Whether this learner handles undefined loss internally. It is exposed
+        # via `handles_undefined_loss`. If `True`, the learner is responsible
+        # for mitigating undefined loss (e.g. skipping the update) to avoid
+        # corrupting the model weights.
+        ignore_undefined_loss: bool = False
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -241,6 +258,9 @@ class Learner(BaseLearner):
             A nested dict with the same structure as `model_params` with boolean leaf values.
         """
         return jax.tree.map(should_update_with_optimizers, self._update_types(model_params))
+
+    def handles_undefined_loss(self) -> bool:
+        return self.config.ignore_undefined_loss
 
     def update(self, updates: Updates) -> Nested[Tensor]:
         """Computes `model_params` updates from `update`.
@@ -599,6 +619,12 @@ class CompositeLearner(BaseLearner):
                 should_update,
             )
         return should_update
+
+    def handles_undefined_loss(self) -> bool:
+        return all(
+            getattr(self, sub_learner_name).handles_undefined_loss()
+            for sub_learner_name in self.config.learners.keys()
+        )
 
 
 def _split_gradients(
