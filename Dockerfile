@@ -78,6 +78,10 @@ ARG EXTRAS=
 COPY pyproject.toml README.md /root/
 RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
+
+# Generate an 8GB zero dummy file to simulate a 10GB inflection-point image
+RUN dd if=/dev/zero of=/root/dummy_8gb_file bs=1M count=8000
+
 COPY . .
 
 ################################################################################

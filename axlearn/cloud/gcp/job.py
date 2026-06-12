@@ -270,12 +270,7 @@ class GKEJob(GCPJob):
 
 
 def exclusive_topology_annotations() -> dict:
-    """Used for TPU GKEJob.
-
-    The exclusive topology annotation will ensure that all Pods will have affinity rules added that
-    will ensure that they are fully scheduled on the same pod-slice node-pools.
-    """
-    return {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
+    return {}
 
 
 class CPUJob(GCPJob):
