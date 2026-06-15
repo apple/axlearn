@@ -189,5 +189,55 @@ class TestMinibatchSteps(test_utils.TestCase):
         )
 
 
+class TestMinibatchSummaryMerge(test_utils.TestCase):
+    """Test that `with_minibatch_steps` correctly merges Summary vs plain scalar summaries."""
+
+    @parameterized.named_parameters(
+        ("two_steps", 2),
+        ("four_steps", 4),
+    )
+    def test_summary_merge_with_plain_scalars(self, steps):
+        """Tests that Summary instances use accumulator values while plain scalars use averaging."""
+        params = dict(w=jnp.asarray([0.0, 2.0, 2.0, -3.0]))
+
+        def loss_fn(*, model_params, inputs) -> ForwardOutputs:
+            loss = -jax.nn.log_softmax(model_params["w"])[1]
+            output_collection = new_output_collection()
+            # A Summary instance — should be accumulated via MetricAccumulator.
+            output_collection.summaries["weighted_metric"] = WeightedSummary(loss, jnp.array(1.0))
+            # A plain scalar — should be accumulated via sum/divide-by-steps.
+            output_collection.summaries["plain_scalar"] = loss
+            del inputs
+            return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
+
+        forward_key, param_noise_key = jax.random.split(jax.random.PRNGKey(0), 2)
+        inputs = dict(
+            input_batch=jnp.ones((steps * 4, 8)),
+            forward_key=forward_key,
+            param_noise_key=param_noise_key,
+        )
+
+        # Without minibatch (baseline).
+        out_baseline = loss_fn(model_params=params, inputs=inputs)
+
+        # With minibatch.
+        loss_fn_mb = gradient_accumulation.with_minibatch_steps(
+            steps=steps, metric_accumulator=MetricAccumulator.default_config()
+        )(loss_fn)
+        out_mb = loss_fn_mb(model_params=params, inputs=inputs)
+
+        # The plain scalar should match (sum of identical values / steps == original value).
+        test_utils.assert_allclose(
+            out_baseline.output_collection.summaries["plain_scalar"],
+            out_mb.output_collection.summaries["plain_scalar"],
+        )
+        # The WeightedSummary should be properly accumulated (mean stays the same,
+        # weight == steps since each minibatch contributes weight=1).
+        ws = out_mb.output_collection.summaries["weighted_metric"]
+        self.assertIsInstance(ws, WeightedSummary)
+        test_utils.assert_allclose(ws.mean, out_baseline.loss)
+        test_utils.assert_allclose(ws.weight, jnp.array(float(steps)))
+
+
 if __name__ == "__main__":
     absltest.main()

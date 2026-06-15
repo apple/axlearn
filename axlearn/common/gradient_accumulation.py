@@ -13,6 +13,7 @@ from jax import numpy as jnp
 from axlearn.common import utils
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.metrics import MetricAccumulator
+from axlearn.common.summary import Summary
 from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     ForwardFn,
     ForwardOutputs,
@@ -288,7 +289,21 @@ def with_minibatch_steps(
             # Since we summed during accumulation we take the average here to rescale.
             grads = jax.tree.map(lambda x: x / steps, grads)
             primal_out = jax.tree.map(lambda x: x / steps, primal_out)
-            primal_out.output_collection.summaries.update(accumulator.summaries())
+
+            # Merge accumulator summaries with primal_out at the leaf level. For Summary
+            # instances, use the accumulator's properly accumulated value. For plain scalars
+            # keep primal_out's value. The accumulator maps non-Summary leaves to None.
+            def _is_summary_leaf(x):
+                return isinstance(x, Summary) or x is None
+
+            merged = jax.tree.map(
+                lambda acc, pri: acc if isinstance(acc, Summary) else pri,
+                accumulator.summaries(),
+                primal_out.output_collection.summaries,
+                is_leaf=_is_summary_leaf,
+            )
+            primal_out.output_collection.summaries.clear()
+            primal_out.output_collection.summaries.update(merged)
             return primal_out, grads
 
         def sequential_vmap(func: ForwardFn) -> ForwardFn:
