@@ -280,24 +280,15 @@ class SummaryWriter(BaseWriter):
         if step % cfg.write_every_n_steps != 0:
             return
 
+        prepared, paths = _prepare_for_d2h(values)
+
         with self.summary_writer.as_default(step=step):
 
-            def write(path: str, value: jax.Array):
-                if isinstance(value, Summary):
-                    raw_value = value.value()
-                else:
-                    raw_value = value
-
-                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
-
-                if isinstance(raw_value, Tensor) and not raw_value.is_fully_replicated:
-                    logging.warning(
-                        "SummaryWriter: %s: %s is not fully replicated", path, raw_value
-                    )
+            def write(path: str, raw_value, value):
+                if raw_value is None:
                     return
 
-                if isinstance(raw_value, jax.Array):
-                    raw_value = np.asarray(raw_value)
+                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
 
                 if _match_summary_type("Image", value=value, raw_value=raw_value):
                     if self._time_to_write(step, "Image"):
@@ -338,12 +329,7 @@ class SummaryWriter(BaseWriter):
                     raw_value.__class__,
                 )
 
-            def is_leaf(x):
-                return isinstance(x, Summary)
-
-            paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-            jax.tree.map(write, paths, values, is_leaf=is_leaf)
-            self.summary_writer.flush()
+            jax.tree.map(write, paths, prepared, values, is_leaf=_is_summary_leaf)
 
 
 class WandBWriter(BaseWriter):
@@ -522,18 +508,13 @@ class WandBWriter(BaseWriter):
         if step % cfg.write_every_n_steps != 0:
             return
 
-        def convert(path: str, value: Any):
-            if isinstance(value, Summary):
-                raw_value = value.value()
-            else:
-                raw_value = value
+        prepared, paths = _prepare_for_d2h(values)
 
+        def convert(path: str, raw_value, value: Any):
             self.vlog(3, "WandbWriter %s: %s=%s", self.path(), path, raw_value)
 
-            # Ensure all arrays are cast to numpy. Wandb will crash if jax.Array is present.
-            if isinstance(raw_value, jax.Array):
-                # It internally call jax.device_get() to copy TPU/GPU tensor to CPU.
-                raw_value = np.asarray(raw_value)
+            if raw_value is None:
+                return
 
             if _match_summary_type("Image", value=value, raw_value=raw_value):
                 if self._time_to_write(step, "Image"):
@@ -542,7 +523,6 @@ class WandBWriter(BaseWriter):
 
             if _match_summary_type("Audio", value=value, raw_value=raw_value):
                 if self._time_to_write(step, "Audio"):
-                    # W&B calls soundfile.write and saves a wav file with int16 dtype.
                     sample_rate = value.sample_rate
                     assert raw_value.ndim == 2, raw_value.shape
                     assert np.issubdtype(raw_value.dtype, np.floating), raw_value.dtype
@@ -570,11 +550,7 @@ class WandBWriter(BaseWriter):
                 'WandBWriter: Does not know how to log "%s" (%s).', path, raw_value.__class__
             )
 
-        def is_leaf(x):
-            return isinstance(x, Summary)
-
-        paths = tree_paths(values, separator="/", is_leaf=is_leaf)
-        values = jax.tree.map(convert, paths, values, is_leaf=is_leaf)
+        values = jax.tree.map(convert, paths, prepared, values, is_leaf=_is_summary_leaf)
 
         # Flatten nested dicts and join the keys with "/"
         flat_paths_and_values, _ = jax.tree_util.tree_flatten_with_path(values)
@@ -590,11 +566,38 @@ class WandBWriter(BaseWriter):
         # and will create the proper nesting if we replace `.` with `/`.
         values = {k.replace(".", "/"): v for k, v in values.items() if v is not None}
 
-        # Jax SPMD execution model requires that all JAX collective API calls (such as
-        # `jax.device_get()`) be invoked simultaneously on all processes. OTOH, reporting to
-        # W&B should be performed only on process 0 to avoid duplicated reports.
+        # Reporting to W&B should be performed only on process 0 to avoid duplicated reports.
         @processor_zero_only
         def _upload(values, step):
             wandb.log(values, step=step)
 
         _upload(values, step)
+
+
+def _is_summary_leaf(x) -> bool:
+    """Pytree is_leaf predicate that treats Summary objects as leaves."""
+    return isinstance(x, Summary)
+
+
+def _prepare_for_d2h(values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Unwrap Summary objects and transfer all values to host in a single batch.
+
+    Returns:
+        A tuple of (prepared_np, paths) where prepared_np contains numpy values
+        (with None for non-replicated tensors) and paths contains the corresponding
+        summary path strings.
+    """
+
+    def _unwrap(value):
+        raw = value.value() if isinstance(value, Summary) else value
+        if isinstance(raw, Tensor) and not raw.is_fully_replicated:
+            logging.warning("SummaryWriter: %s is not fully replicated", raw)
+            return None
+        return raw
+
+    prepared = jax.tree.map(_unwrap, values, is_leaf=_is_summary_leaf)
+    # Critical: batch all device-to-host transfers in one call. Sequential per-value
+    # np.asarray() is orders of magnitude slower (90s vs <1s for ~1750 scalar entries).
+    prepared = jax.device_get(prepared)
+    paths = tree_paths(values, separator="/", is_leaf=_is_summary_leaf)
+    return prepared, paths
