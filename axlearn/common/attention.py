@@ -4227,6 +4227,36 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 class _TransformerRepeat(Repeat):
     """A Repeat layer with layer=TransformerLayer."""
 
+    def _layer_fn(self, carry: dict, x_i: dict, *, mode: ForwardMode, **layer_kwargs):
+        """Runs one scanned layer iteration; returns ``(next_carry, ys)``.
+
+        ``carry`` is threaded across iterations; ``x_i`` holds the per-iteration scanned
+        values (``cached_states`` plus any ``scan_kwargs`` entries, each sliced per layer);
+        ``layer_kwargs`` are broadcast to every layer. Anything left in ``x_i`` is spread
+        into the layer as kwargs. Override in a subclass to customize how a layer is invoked
+        — e.g. pop a per-layer slice out of ``x_i`` and use it before delegating to ``super``.
+        """
+        cached_states = x_i.pop("cached_states")
+        if mode == ForwardMode.FORWARD:
+            layer_states, layer_outputs = None, self.layer(**carry, **x_i, **layer_kwargs)
+        elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
+            assert cached_states is not None
+            layer_states, layer_outputs = self.layer.extend_step(
+                cached_states=cached_states,
+                is_prefill=(mode == ForwardMode.PREFILL),
+                **carry,
+                **x_i,
+                **layer_kwargs,
+            )
+        else:
+            raise ValueError(f"Unrecognized mode {mode}.")
+
+        ys = {}
+        if layer_states is not None:
+            ys["cached_states"] = layer_states
+        ys.update({k: v for k, v in layer_outputs._asdict().items() if k not in carry})
+        return {k: getattr(layer_outputs, k) for k in carry}, ys
+
     def _forward_for_mode(
         self,
         *,
@@ -4260,29 +4290,6 @@ class _TransformerRepeat(Repeat):
             for path, value in flatten_items(cached_states):
                 assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
 
-        def layer_fn(carry, x_i):
-            cached_states = x_i.pop("cached_states")
-            if mode == ForwardMode.FORWARD:
-                layer_states, layer_outputs = None, self.layer(**carry, **x_i, **layer_kwargs)
-            elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
-                assert cached_states is not None
-                layer_states, layer_outputs = self.layer.extend_step(
-                    cached_states=cached_states,
-                    is_prefill=(mode == ForwardMode.PREFILL),
-                    **carry,
-                    **x_i,
-                    **layer_kwargs,
-                )
-            else:
-                raise ValueError(f"Unrecognized mode {mode}.")
-
-            ys = {}
-            if layer_states is not None:
-                ys["cached_states"] = layer_states
-
-            ys.update({k: v for k, v in layer_outputs._asdict().items() if k not in carry})
-            return {k: getattr(layer_outputs, k) for k in carry}, ys
-
         if carry is None:
             carry_in = {"data": data}
         else:
@@ -4295,7 +4302,11 @@ class _TransformerRepeat(Repeat):
         if scan_kwargs is not None:
             for k in scan_kwargs:
                 xs[k] = layer_kwargs.pop(k, None)
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry_in, xs=xs)
+        repeat_outputs: Repeat.Output = self._run(
+            functools.partial(self._layer_fn, mode=mode, **layer_kwargs),
+            carry=carry_in,
+            xs=xs,
+        )
         carry_out = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
@@ -4416,7 +4427,12 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         **layer_kwargs,
     ) -> TransformerLayer.Output:
         cfg = self.config
-        return self.repeat(data, carry=cfg.carry, scan_kwargs=cfg.scan_kwargs, **layer_kwargs)
+        return self.repeat(
+            data,
+            carry=cfg.carry,
+            scan_kwargs=cfg.scan_kwargs,
+            **layer_kwargs,
+        )
 
     @nowrap
     def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> Nested[Tensor]:

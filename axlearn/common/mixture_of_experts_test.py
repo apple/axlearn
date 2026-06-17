@@ -2229,5 +2229,142 @@ class CustomGatherTest(TestCase):
         self.assertNestedAllClose(ref, test)
 
 
+def _forced_gating(gating_cls, forced):
+    """A test-local subclass of ``gating_cls`` whose routing is forced to ``forced``.
+
+    Stands in for a subclass that installs a fixed expert assignment from an external
+    context: it overrides the single ``_compute_index`` hook every gating exposes and
+    inherits the natural ``forward()`` otherwise. ``forced`` is the expert-index tensor of
+    shape ``[..., K]``.
+    """
+
+    class _Forced(gating_cls):
+        def _compute_index(self, raw_gates, *, k):
+            del raw_gates, k
+            return forced
+
+    return _Forced
+
+
+class GateAssignmentOverrideTest(TestCase):
+    """The generic gating override + emit, per gating class.
+
+    Routing is overridden by subclassing the gating and overriding its selection
+    method (the axlearn hook) — see ``_forced_gating`` — not via config. Every forward
+    unconditionally publishes the routed assignment to ``module_outputs`` (XLA drops it
+    when unread). Input rank differs by class: Top2/TopK take 4D ``[O, B, S, E]`` while
+    the drop-free family takes 3D ``[B, S, E]``.
+    """
+
+    def _run(self, layer, logits, *, is_training=False):
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        return F(
+            layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(logits=logits),
+            drop_output_collections=[],
+        )
+
+    @parameterized.named_parameters(
+        ("top2", Top2Gating, (1, 2, 8, 8), dict(num_experts=8, expert_capacity=8)),
+        (
+            "topk",
+            TopKGating,
+            (1, 2, 8, 8),
+            dict(
+                num_experts=8,
+                num_experts_per_token=2,
+                expert_capacity=0,
+                eval_capacity_factor=100.0,
+            ),
+        ),
+        ("dropfree", TopKDropFreeGating, (2, 8, 8), dict(num_experts=8, num_experts_per_token=2)),
+        ("bias", TopKBiasGating, (2, 8, 8), dict(num_experts=8, num_experts_per_token=2)),
+    )
+    def test_override_forces_selection(self, gating_cls, logits_shape, cfg_kwargs):
+        # K is 2 for all four (Top2 is fixed top-2; the rest set it explicitly).
+        forced = jnp.zeros((*logits_shape[:-1], 2), jnp.int32).at[..., 1].set(1)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), logits_shape)
+
+        def make(cls):
+            return cls.default_config().set(name="test", **cfg_kwargs).instantiate(parent=None)
+
+        # Natural routing on random logits should not match the forced pattern. Read the
+        # routed assignment from module_outputs (the channel downstream consumers use).
+        _, natural_coll = self._run(make(gating_cls), logits)
+        self.assertFalse(jnp.array_equal(natural_coll.module_outputs["gate_assignment"], forced))
+        # The forced subclass must publish exactly the forced indices.
+        _, forced_coll = self._run(make(_forced_gating(gating_cls, forced)), logits)
+        self.assertTrue(jnp.array_equal(forced_coll.module_outputs["gate_assignment"], forced))
+
+    def test_override_recomputes_weights_from_logits(self):
+        # The forced subclass fixes the assignment but recomputes gate weights from the
+        # current logits (so gradients still flow through them). The same forced
+        # assignment under different logits => same assignment, different weights.
+        num_experts, k = 8, 2
+        shape = (2, 8, num_experts)
+        forced = jnp.zeros((*shape[:-1], k), jnp.int32).at[..., 1].set(1)
+        layer = (
+            _forced_gating(TopKDropFreeGating, forced)
+            .default_config()
+            .set(name="test", num_experts=num_experts, num_experts_per_token=k)
+            .instantiate(parent=None)
+        )
+        out_a, _ = self._run(layer, jax.random.uniform(jax.random.PRNGKey(1), shape))
+        out_b, _ = self._run(layer, jax.random.uniform(jax.random.PRNGKey(2), shape) * 5.0)
+        assert_allclose(out_a.gate_assignment, forced)
+        assert_allclose(out_b.gate_assignment, forced)
+        self.assertFalse(jnp.allclose(out_a.expert_weights, out_b.expert_weights))
+
+    @parameterized.named_parameters(
+        ("top2", Top2Gating, (1, 2, 8, 8), dict(num_experts=8, expert_capacity=8)),
+        (
+            "topk",
+            TopKGating,
+            (1, 2, 8, 8),
+            dict(
+                num_experts=8,
+                num_experts_per_token=2,
+                expert_capacity=0,
+                eval_capacity_factor=100.0,
+            ),
+        ),
+        ("dropfree", TopKDropFreeGating, (2, 8, 8), dict(num_experts=8, num_experts_per_token=2)),
+        ("bias", TopKBiasGating, (2, 8, 8), dict(num_experts=8, num_experts_per_token=2)),
+    )
+    def test_emit_publishes_gate_assignment(self, gating_cls, logits_shape, cfg_kwargs):
+        logits = jax.random.uniform(jax.random.PRNGKey(1), logits_shape)
+
+        # Every gating forward unconditionally publishes the routed assignment to
+        # module_outputs; there is no config flag gating it (XLA drops it when unread).
+        layer = gating_cls.default_config().set(name="test", **cfg_kwargs).instantiate(parent=None)
+        _, coll = self._run(layer, logits)
+        self.assertIn("gate_assignment", coll.module_outputs)
+
+    def test_bias_gating_freezes_bias_under_override(self):
+        # The aux-loss-free bias adapts from the *selected* experts in training. An
+        # overriding subclass overrides _compute_index and never calls _top_k, so the bias
+        # update is skipped — otherwise it would fight the forced routing.
+        num_experts, k = 8, 2
+        logits = jax.random.uniform(jax.random.PRNGKey(1), (2, 8, num_experts))
+        forced = jnp.zeros((2, 8, k), jnp.int32).at[..., 1].set(1)
+
+        def run(cls):
+            return self._run(
+                cls.default_config()
+                .set(name="test", num_experts=num_experts, num_experts_per_token=k)
+                .instantiate(parent=None),
+                logits,
+                is_training=True,
+            )
+
+        _, natural_coll = run(TopKBiasGating)
+        self.assertIn("gate_bias", natural_coll.state_updates)
+        _, override_coll = run(_forced_gating(TopKBiasGating, forced))
+        self.assertNotIn("gate_bias", override_coll.state_updates)
+
+
 if __name__ == "__main__":
     absltest.main()

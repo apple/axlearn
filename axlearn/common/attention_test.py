@@ -66,6 +66,7 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
     TransformerLayer,
     _next_power_of_two,
+    _TransformerRepeat,
     apply_attention_logit_biases,
     apply_rotary_position_embeddings,
     build_remat_spec,
@@ -6416,6 +6417,81 @@ class LogitSinkTest(TestCase):
 
         # Results should be different
         self.assertFalse(jnp.allclose(probs_no_sink, probs_with_sink, atol=1e-6))
+
+
+class _IdentityLayer(BaseLayer):
+    """Returns ``data`` unchanged; a minimal layer for exercising the repeat scan plumbing."""
+
+    def forward(self, data, **kwargs):
+        del kwargs
+        return TransformerLayer.Output(data=data)
+
+
+class TransformerRepeatPerLayerStateTest(TestCase):
+    """The per-layer-state hook on `_TransformerRepeat` (used by RepeatedTransformerLayer).
+
+    The hook is the single overridable `_layer_fn`. Per-layer state is delivered through the
+    existing `scan_kwargs` mechanism (a `[num_layers, ...]` value that scan slices per layer);
+    a `_layer_fn` override pops each layer's slice out of `x_i` and uses it. Each test defines
+    its own override locally, so there is no shared state and no config callables.
+    """
+
+    def _run(self, repeat_cls, *, num_layers, deliver_per_layer):
+        layer = (
+            repeat_cls.default_config()
+            .set(name="r", layer=_IdentityLayer.default_config(), num_layers=num_layers)
+            .instantiate(parent=None)
+        )
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        inputs = dict(data=jnp.zeros((2, 4, 1)), carry=("data",))
+        if deliver_per_layer:
+            # Per-layer state rides the existing scan_kwargs path: scan slices the leading
+            # [num_layers] axis so layer i receives row i.
+            inputs["scan_kwargs"] = ("per_layer_v",)
+            inputs["per_layer_v"] = jnp.arange(num_layers, dtype=jnp.float32).reshape(num_layers, 1)
+        out, _ = F(
+            layer,
+            inputs=inputs,
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        return out
+
+    def test_layer_fn_threads_correct_slice_per_layer(self):
+        # An override pops layer i's scan_kwargs slice and folds it into the carry as
+        # data*10 + i. With data init 0 and slices 0,1,2 delivered in order,
+        # ((0*10+0)*10+1)*10+2 == 12, so this pins slice-i -> layer-i (a reversed or constant
+        # threading would yield a different value).
+        class _FoldSliceRepeat(_TransformerRepeat):
+            def _layer_fn(self, carry, x_i, *, mode, **layer_kwargs):
+                v = x_i.pop("per_layer_v")
+                next_carry, ys = super()._layer_fn(carry, x_i, mode=mode, **layer_kwargs)
+                next_carry["data"] = next_carry["data"] * 10.0 + v.astype(next_carry["data"].dtype)
+                return next_carry, ys
+
+        out = self._run(_FoldSliceRepeat, num_layers=3, deliver_per_layer=True)
+        assert_allclose(out.data, jnp.full((2, 4, 1), 12.0))
+
+    def test_layer_fn_sees_one_layer_slice(self):
+        # scan traces the body once, so a `_layer_fn` override sees a single (traced) call
+        # whose slice has the leading num_layers axis stripped to one layer's worth.
+        seen_shapes = []
+
+        class _RecordSliceRepeat(_TransformerRepeat):
+            def _layer_fn(self, carry, x_i, *, mode, **layer_kwargs):
+                v = x_i.pop("per_layer_v")
+                seen_shapes.append(tuple(v.shape))
+                return super()._layer_fn(carry, x_i, mode=mode, **layer_kwargs)
+
+        self._run(_RecordSliceRepeat, num_layers=3, deliver_per_layer=True)
+        self.assertEqual(seen_shapes, [(1,)])
+
+    def test_default_layer_fn_is_noop(self):
+        # Without the per-layer scan_kwarg, the base `_layer_fn` runs the layer unchanged, so
+        # `data` is untouched across layers.
+        out = self._run(_TransformerRepeat, num_layers=3, deliver_per_layer=False)
+        assert_allclose(out.data, jnp.zeros((2, 4, 1)))
 
 
 if __name__ == "__main__":

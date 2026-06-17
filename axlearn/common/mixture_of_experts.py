@@ -402,6 +402,14 @@ class BaseGating(BaseLayer):
         """
         raise NotImplementedError(type(self))
 
+    def _emit_gate_assignment(self, gate_assignment: Tensor) -> None:
+        """Publishes ``gate_assignment`` to ``module_outputs["gate_assignment"]``.
+
+        Centralizes the capture path so every gating subclass emits identically. The
+        emit is unconditional: XLA eliminates the output when nothing downstream reads it.
+        """
+        self.add_module_output("gate_assignment", gate_assignment)
+
     @nowrap
     def dispatch(
         self,
@@ -492,6 +500,27 @@ class Top2Gating(BaseGating):
         if cfg.adaptive_load_balance_loss is not None:
             self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
 
+    def _compute_index(self, raw_gates: Tensor, *, k: int) -> Tensor:
+        """Selects the top-k experts for each token: returns indices of shape ``[..., k]``.
+
+        Default is greedy — the argmax, then the argmax of the remaining experts (Top2 is
+        fixed top-2, so ``k`` must be 2). A subclass may override this to force a fixed
+        expert assignment; `forward` recomputes the gate weights from the current
+        `raw_gates`, so gradients still flow.
+
+        Args:
+            raw_gates: post-softmax gate values, shape ``[O, G, S, E]``.
+            k: number of experts per token (2 for Top2Gating).
+
+        Returns:
+            An ``[O, G, S, k]`` int tensor of expert indices.
+        """
+        del k  # Top2Gating is fixed top-2.
+        index_1 = jnp.argmax(raw_gates, axis=-1)
+        mask_1 = jax.nn.one_hot(index_1, raw_gates.shape[-1], dtype=self.config.mask_dtype)
+        index_2 = jnp.argmax(jnp.where(mask_1, 0.0, raw_gates), axis=-1)
+        return jnp.stack([index_1, index_2], axis=-1)
+
     # pylint: disable-next=too-many-statements
     def forward(self, logits: Tensor) -> NestedTensor:
         """Please see comments of BaseGating.forward."""
@@ -510,18 +539,19 @@ class Top2Gating(BaseGating):
             num_experts=cfg.num_experts,
         )
 
-        # top-1 index: OGS tensor.
-        index_1 = jnp.argmax(raw_gates, axis=-1)
-        # OGSE tensor.
+        # Expert selection (overridable). Default is greedy top-1 then top-2; a subclass
+        # may override `_compute_index` to force a fixed expert assignment. gate_assignment
+        # is an OGSK (K=2) tensor; index_1/index_2 are OGS.
+        gate_assignment = self._compute_index(raw_gates, k=2)
+        index_1, index_2 = gate_assignment[..., 0], gate_assignment[..., 1]
+        # OGSE tensors.
         mask_1 = jax.nn.one_hot(index_1, raw_gates.shape[-1], dtype=cfg.mask_dtype)
+        # Mask out the top-1 slot so gate_2 doesn't double-count when index_1 == index_2
+        # (possible when an override forces the same expert into both slots).
+        gates_without_top_1 = jnp.where(mask_1, 0.0, raw_gates)
+        mask_2 = jax.nn.one_hot(index_2, raw_gates.shape[-1], dtype=cfg.mask_dtype)
 
         gate_1 = jnp.einsum("ogse,ogse->ogs", raw_gates, mask_1.astype(raw_gates.dtype))
-        gates_without_top_1 = jnp.where(mask_1, 0.0, raw_gates)
-
-        # Greedily pick the 2nd expert.
-        index_2 = jnp.argmax(gates_without_top_1, axis=-1)
-
-        mask_2 = jax.nn.one_hot(index_2, cfg.num_experts, dtype=cfg.mask_dtype)
         gate_2 = jnp.einsum(
             "ogse,ogse->ogs", gates_without_top_1, mask_2.astype(gates_without_top_1.dtype)
         )
@@ -630,6 +660,9 @@ class Top2Gating(BaseGating):
                 jnp.maximum(over_capacity_1, over_capacity_2)
             )
             self.add_summary("load_balance_loss", aux_loss)
+
+        gate_assignment = jnp.stack([index_1, index_2], axis=-1)
+        self._emit_gate_assignment(gate_assignment)
 
         return self.Output(
             combine_tensor=combine_tensor,
@@ -769,6 +802,16 @@ class TopKGating(BaseGating):
 
         return gate_weights, gate_assignment
 
+    def _compute_index(self, raw_gates: Tensor, *, k: int) -> Tensor:
+        """Selects the routed experts: returns expert indices of shape ``[..., k]``.
+
+        Default is the natural top-k (`_top_k`, which uses a configured `topk_fn`). A
+        subclass may override this to force a fixed expert assignment; `forward` recomputes
+        the gate weights from the current `raw_gates` (``take_along_axis``) so gradients
+        still flow through the logits.
+        """
+        return self._top_k(raw_gates, k=k)[1]
+
     def _score(self, logits: Tensor, axis: int = -1) -> Tensor:
         """Computes scores from logits using configured score_fn or default softmax."""
         cfg = self.config
@@ -891,9 +934,13 @@ class TopKGating(BaseGating):
         # Get the expert capacity.
         expert_capacity = self._get_expert_capacity(group_size=logits.shape[-2])
 
-        # Select top-k experts for each token using configurable top-k function.
-        # gate_weights: [O, G, S, K], gate_assignment: [O, G, S, K]
-        gate_weights, gate_assignment = self._top_k(raw_gates, k=num_experts_per_token)
+        # Select top-k experts for each token (overridable; default = `_top_k`), then
+        # recompute the gate weights from the current logits so gradients flow through them.
+        # gate_assignment: [O, G, S, K], gate_weights: [O, G, S, K]
+        gate_assignment = self._compute_index(raw_gates, k=num_experts_per_token)
+        gate_weights = jnp.take_along_axis(raw_gates, gate_assignment, axis=-1)
+        # Preserve the [O, G, S, K] shape for the Output before downstream reshapes.
+        original_gate_assignment = gate_assignment
 
         # Get the expert load balance loss.
         # This considers the load balance of all the top-k selected experts.
@@ -988,6 +1035,8 @@ class TopKGating(BaseGating):
             self.add_summary("load_balance_loss_original", load_balance_loss)
             load_balance_loss *= self.adaptive_load_balance_loss(over_capacity_ratio)
             self.add_summary("load_balance_loss", load_balance_loss)
+
+        self._emit_gate_assignment(original_gate_assignment)
 
         return self.Output(
             combine_tensor=combine_tensor,
@@ -1151,8 +1200,11 @@ class TopKDropFreeGating(TopKGating):
         # [B, S, E]
         raw_gates = self._score(logits, axis=-1)  # along E dim if needed.
 
+        # Configurable top-K selection (overridable; default = `_top_k`), then recompute
+        # the gate weights from the current logits so gradients flow through them.
         # [B, S, K], [B, S, K]
-        gate_weights, gate_assignment = self._top_k(raw_gates, k=cfg.num_experts_per_token)
+        gate_assignment = self._compute_index(raw_gates, k=cfg.num_experts_per_token)
+        gate_weights = jnp.take_along_axis(raw_gates, gate_assignment, axis=-1)
 
         # Get the expert load balance loss.
         # This considers the load balance of all the top-k selected experts.
@@ -1176,6 +1228,7 @@ class TopKDropFreeGating(TopKGating):
         # Renormalize the gates of the selected expert.
         # [B, S, K]
         expert_weights = gate_weights / denom
+        self._emit_gate_assignment(gate_assignment)
         # [B, S, K], [B, S, K]
         return self.Output(
             gate_assignment=gate_assignment,
@@ -1269,13 +1322,19 @@ class TopKBiasGating(TopKDropFreeGating):
         logits = _cap_logits(logits, cfg.gating_logit_cap)
         B, S, E = logits.shape  # pylint: disable=invalid-name
 
+        raw_gates = self._score(logits, axis=-1)
+
         if cfg.num_group_of_experts == 1 and cfg.topk_group == 1:
-            # Simple routing without group logic.
+            # Simple routing on the unreshaped [B, S, E] scores. Selection is overridable
+            # (default = `_top_k`, which also runs the aux-loss-free gating-bias update in
+            # training). A subclass that overrides `_compute_index` to force the routing
+            # therefore also skips the bias update — the bias adapts load only for natural
+            # routing. Such a subclass must use simple routing; group routing below is
+            # natural-only.
             router_z_loss = _router_z_loss(logits)
             self.add_summary("router_z_loss", router_z_loss)
-
-            raw_gates = self._score(logits, axis=-1)
-            gate_weights, gate_assignment = self._top_k(raw_gates, k=cfg.num_experts_per_token)
+            gate_assignment = self._compute_index(raw_gates, k=cfg.num_experts_per_token)
+            gate_weights = jnp.take_along_axis(raw_gates, gate_assignment, axis=-1)
             load_balance_loss = self._load_balance_loss(
                 raw_gates=raw_gates,
                 gate_assignment=gate_assignment,
@@ -1294,6 +1353,7 @@ class TopKBiasGating(TopKDropFreeGating):
             expert_weights = gate_weights / denom
             if cfg.routed_scaling_factor != 1:
                 expert_weights *= cfg.routed_scaling_factor
+            self._emit_gate_assignment(gate_assignment)
             return self.Output(
                 gate_assignment=gate_assignment,
                 expert_weights=expert_weights,
@@ -1369,6 +1429,7 @@ class TopKBiasGating(TopKDropFreeGating):
             expert_weights = gate_weights / denom
             if cfg.routed_scaling_factor != 1:
                 expert_weights *= cfg.routed_scaling_factor
+            self._emit_gate_assignment(gate_assignment.reshape(B, S, -1))
             return self.Output(
                 gate_assignment=gate_assignment.reshape(B, S, -1),
                 expert_weights=expert_weights.reshape(B, S, -1),
