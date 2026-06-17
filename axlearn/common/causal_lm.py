@@ -303,6 +303,7 @@ class CompositeLossMetrics(BaseLossMetrics):
             loss_weights = None
 
         losses = []
+        aux_losses = []
         metrics = {}
         for name, (child_loss, child_metrics) in all_child_metrics.items():
             # Downstream wants unweighted losses.
@@ -311,7 +312,14 @@ class CompositeLossMetrics(BaseLossMetrics):
                 child_loss = WeightedSummary(
                     child_loss.mean * loss_weights[name], child_loss.weight
                 )
-            losses.append(child_loss)
+            if isinstance(self._metrics[name], AuxLossMetrics):
+                # Aux losses are constant per-token regularizers, not per-token CE: combining
+                # them via weighted-mean would dilute the CE term (e.g., text-only `L_t` would
+                # become `L_t/2` the moment an `aux=0` child is added). Instead, add them
+                # additively after weighted-mean over the CE-like children.
+                aux_losses.append(child_loss.mean)
+            else:
+                losses.append(child_loss)
 
             ctx = self.get_invocation_context()
 
@@ -321,19 +329,8 @@ class CompositeLossMetrics(BaseLossMetrics):
                 _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop(name))
                 _update(metrics, child_metrics)
 
-        def _aggregate(losses):
-            if not losses:
-                return WeightedSummary(0.0, 0.0)
-
-            # For backward compatibility, aggregation is done using sum(each.mean) instead of
-            # sum(each.mean * each.weight) / sum(each.weight).
-            loss = weight = 0.0
-            for each in losses:
-                loss += each.mean
-                weight += each.weight
-            return WeightedSummary(loss, weight)
-
-        loss = _aggregate(losses)
+        base_loss = sum(losses, start=WeightedSummary(0.0, 0.0))
+        loss = WeightedSummary(base_loss.mean + sum(aux_losses, 0.0), base_loss.weight)
         return loss, metrics
 
 

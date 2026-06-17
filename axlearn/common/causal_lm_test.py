@@ -737,14 +737,14 @@ class CompositeLossMetricsTest(TestCase):
             is_training=True,
         )
         self.assertAlmostEqual(
-            loss.value(), 1.23 * loss_weights["test0"] + 3.45 * loss_weights["test1"]
+            loss.value(), (1.23 * loss_weights["test0"] + 3.45 * loss_weights["test1"]) / 2
         )
 
         def _aggregate(aux):
             loss = 0.0
             for name, loss_weight in loss_weights.items():
                 loss += loss_weight * aux[f"loss_{name}"].mean
-            return loss
+            return loss / 2
 
         self.assertAlmostEqual(loss.value(), _aggregate(aux))
 
@@ -852,7 +852,7 @@ class ModelAuxLossTest(TestCase):
                 self.assertEqual(aux["metrics"]["aux_loss"], 1.0)
             else:
                 self.assertEqual(aux["metrics"]["aux_loss"], 0.0)
-            self.assertEqual(aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"], loss)
+            assert_allclose(aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"], loss)
         else:
             self.assertNotIn("aux_loss", aux)
             self.assertEqual(aux["metrics"]["cross_entropy"], loss)
@@ -928,7 +928,7 @@ class ModelAuxLossTest(TestCase):
         summaries: dict[str, MetricSummary] = output_collection.summaries
         self.assertIn("aux_loss", summaries)
         self.assertEqual(summaries["aux_loss"].value(), 1.0)
-        self.assertNestedAllClose(
+        assert_allclose(
             summaries["cross_entropy_loss"].value() + summaries["aux_loss"].value(),
             outputs.forward_outputs.loss,
         )
