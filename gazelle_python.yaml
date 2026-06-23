@@ -301,4 +301,4 @@ manifest:
     zipp: zipp
   pip_repository:
     name: axlearn_pip
-integrity: ac57c9f0b0b6edc9ebbd1a3c07e15355df147ee70d4d1719e22bd9d89e32a52f
+integrity: d6da3821fd16da9e63381b9e5c9337dcd4b72c9b7538dd40121cc0192d262214

@@ -356,7 +356,7 @@ ml-dtypes==0.5.3
     #   keras
     #   tensorflow
     #   tensorstore
-ml-goodput-measurement==0.0.16
+ml-goodput-measurement==0.2.0
     # via -r requirements.in
 more-itertools==10.8.0
     # via
