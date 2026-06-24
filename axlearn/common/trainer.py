@@ -70,6 +70,27 @@ from axlearn.common.utils import (
 )
 
 
+def store_class_vars(obj: Any) -> Any:
+    """Stores class and instance variables of an object into a new dummy instance."""
+    store = obj.__class__.__new__(obj.__class__)
+    for k, v in obj.__class__.__dict__.items():
+        if not isinstance(v, property):
+            setattr(store, k, v)
+    for k, v in obj.__dict__.items():
+        setattr(store, k, v)
+    return store
+
+
+def restore_class_vars(obj: Any, store: Any):
+    """Restores class and instance variables to an object from a store."""
+    for k, v in obj.__class__.__dict__.items():
+        if not isinstance(v, property) and k in store.__dict__:
+            setattr(obj.__class__, k, store.__dict__[k])
+    for k, v in store.__dict__.items():
+        if k not in obj.__class__.__dict__ or k in obj.__dict__:
+            setattr(obj, k, v)
+
+
 class TrainerState(NamedTuple):
     prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
     model: Union[NestedTensor, Nested[TensorSpec], Nested[jax.sharding.NamedSharding]]
@@ -268,6 +289,7 @@ class SpmdTrainer(Module):
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
         self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
+        self._class_vars = None
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -615,6 +637,9 @@ class SpmdTrainer(Module):
                 return None
 
             self._is_initialized = True
+            #### Stores the initial state of all variables ####
+            self._class_vars = store_class_vars(self)
+            
 
             with self.checkpointer:
                 logging.info("Starting loop...")
@@ -651,6 +676,10 @@ class SpmdTrainer(Module):
                             ),
                         )
                         self.vlog(3, "Done step %s", self.step)
+                        self._class_vars = store_class_vars(self)
+                        
+                        restore_class_vars(self, self._class_vars)
+                        
                         num_steps += 1
                         if num_steps % 100 == 0:
                             now = time.perf_counter()
