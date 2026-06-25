@@ -447,10 +447,26 @@ class WandBWriter(BaseWriter):
             wandb.Settings(**cfg.wandb_settings_kwargs) if cfg.wandb_settings_kwargs else None
         )
 
+        tags = cfg.tags or None
+        if tags:
+            _WANDB_MAX_TAG_LEN = 64  # See `wandb.Settings.validate_run_tags`
+            truncated = []
+            for tag in tags:
+                if len(tag) > _WANDB_MAX_TAG_LEN:
+                    logging.warning(
+                        "WandB tag %r is %d characters (max %d); truncating.",
+                        tag,
+                        len(tag),
+                        _WANDB_MAX_TAG_LEN,
+                    )
+                    tag = tag[:_WANDB_MAX_TAG_LEN]
+                truncated.append(tag)
+            tags = truncated
+
         wandb.init(
             id=exp_id,
             name=cfg.exp_name,
-            tags=cfg.tags if cfg.tags else None,
+            tags=tags,
             project=cfg.project,
             entity=cfg.entity,
             notes=cfg.notes,

@@ -329,6 +329,33 @@ class WandBWriterTest(TestCase):
                 wandb.finish()
 
     @unittest.skipIf(wandb is None, "wandb package not installed.")
+    def test_tags_truncated_when_too_long(self):
+        """Tags exceeding 64 characters are truncated and a warning is logged."""
+        long_tag = "x" * 65
+        short_tag = "some_tag"
+        with tempfile.TemporaryDirectory() as tempdir:
+            with (
+                mock.patch("wandb.init") as mock_init,
+                mock.patch("wandb.run", new=None),
+                mock.patch("wandb.util.generate_id", return_value="test-id"),
+                mock.patch("axlearn.common.file_system.exists", return_value=False),
+                mock.patch("axlearn.common.file_system.makedirs"),
+                mock.patch("axlearn.common.file_system.open", mock.mock_open()),
+            ):
+                WandBWriter.default_config().set(
+                    name="test",
+                    dir=tempdir,
+                    mode="disabled",
+                    tags=[long_tag, short_tag],
+                ).instantiate(parent=None)
+
+            _, kwargs = mock_init.call_args
+            tags_passed = kwargs["tags"]
+            self.assertEqual(len(tags_passed[0]), 64)
+            self.assertTrue(long_tag.startswith(tags_passed[0]))
+            self.assertEqual(tags_passed[1], short_tag)
+
+    @unittest.skipIf(wandb is None, "wandb package not installed.")
     @unittest.skipIf("WANDB_API_KEY" not in os.environ, "wandb api key not found.")
     def test_wandb_settings_kwargs(self):
         with tempfile.TemporaryDirectory() as tempdir:
