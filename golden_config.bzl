@@ -29,7 +29,7 @@ def golden_config_test(name, module, data = [], match = None, checks = None, dep
         name = name,
         srcs = [script_name],
         data = data,
-        deps = [module, "//axlearn/common:golden_config"] + deps,
+        deps = [module, Label("//axlearn/common:golden_config")] + deps,
         main = script_name,
         **kwargs
     )
