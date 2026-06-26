@@ -9,6 +9,7 @@ import os.path
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Sequence
 from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
 
@@ -626,8 +627,8 @@ class SpmdTrainer(Module):
 
             with self.checkpointer:
                 logging.info("Starting loop...")
-                start_time = time.perf_counter()
-                num_steps = 0
+                step_times: deque[float] = deque(maxlen=100)
+                prev_time = time.perf_counter()
                 output = None
                 stop_trace_step = None
 
@@ -659,14 +660,13 @@ class SpmdTrainer(Module):
                             ),
                         )
                         self.vlog(3, "Done step %s", self.step)
-                        num_steps += 1
-                        if num_steps % 100 == 0:
-                            now = time.perf_counter()
-                            average_step_time = (now - start_time) / num_steps
+                        now = time.perf_counter()
+                        step_times.append(now - prev_time)
+                        prev_time = now
+                        self.summary_writer.log_average_step_time(self.step, step_times)
+                        if self.step % 100 == 0:
+                            average_step_time = sum(step_times) / len(step_times)
                             self._step_log("Average step time: %s seconds", average_step_time)
-                            self.summary_writer(self.step, {"average_step_time": average_step_time})
-                            num_steps = 0
-                            start_time = now
                         if self.step >= cfg.max_step:
                             self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
                             break

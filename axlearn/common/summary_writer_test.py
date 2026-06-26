@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from enum import Enum
+from typing import Optional
 from unittest import mock
 
 import jax
@@ -30,6 +31,7 @@ from axlearn.common.summary_writer import (
     CompositeWriter,
     SummaryWriter,
     WandBWriter,
+    _average_step_time,
 )
 from axlearn.common.test_utils import TestCase
 
@@ -377,6 +379,106 @@ class WandBWriterTest(TestCase):
                 self.assertTrue(wandb.run.settings.disable_code)
             finally:
                 wandb.finish()
+
+
+class AverageStepTimeTest(TestCase):
+    """Tests _average_step_time helper."""
+
+    def test_empty_step_times(self):
+        self.assertIsNone(_average_step_time([], 10))
+
+    def test_window_zero(self):
+        self.assertIsNone(_average_step_time([1.0, 2.0], 0))
+
+    def test_window_larger_than_buffer(self):
+        self.assertAlmostEqual(_average_step_time([1.0, 3.0], 10), 2.0)
+
+    def test_window_smaller_than_buffer(self):
+        self.assertAlmostEqual(_average_step_time([1.0, 2.0, 3.0, 4.0, 5.0], 3), 4.0)
+
+    def test_window_equals_buffer(self):
+        self.assertAlmostEqual(_average_step_time([2.0, 4.0, 6.0], 3), 4.0)
+
+
+class LogAverageStepTimeTest(TestCase):
+    """Tests log_average_step_time across writer types."""
+
+    def _read_average_step_time(self, tempdir: str, step: int) -> Optional[float]:
+        """Reads average_step_time from TensorBoard events at the given step."""
+        event_acc = EventAccumulator(tempdir, size_guidance={"tensors": 0})
+        event_acc.Reload()
+        if "average_step_time" not in event_acc.Tags().get("tensors", []):
+            return None
+        for event in event_acc.Tensors("average_step_time"):
+            if event.step == step:
+                return float(tf.make_ndarray(event.tensor_proto))
+        return None
+
+    def test_summary_writer_respects_write_every_n_steps(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            cfg = SummaryWriter.default_config().set(
+                name="test", dir=tempdir, write_every_n_steps=5
+            )
+            writer = cfg.instantiate(parent=None)
+            step_times = [1.0, 2.0, 3.0, 4.0, 5.0]
+
+            writer.log_average_step_time(step=3, step_times=step_times)
+            self.assertIsNone(self._read_average_step_time(tempdir, step=3))
+
+            writer.log_average_step_time(step=5, step_times=step_times)
+            self.assertAlmostEqual(self._read_average_step_time(tempdir, step=5), 3.0)
+
+    def test_summary_writer_averages_over_window(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            cfg = SummaryWriter.default_config().set(
+                name="test", dir=tempdir, write_every_n_steps=3
+            )
+            writer = cfg.instantiate(parent=None)
+            step_times = [10.0, 1.0, 2.0, 3.0]
+
+            writer.log_average_step_time(step=3, step_times=step_times)
+            self.assertAlmostEqual(self._read_average_step_time(tempdir, step=3), 2.0)
+
+    def test_base_writer_fires_every_100_steps(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            cfg = SummaryWriter.default_config().set(
+                name="test", dir=tempdir, write_every_n_steps=100
+            )
+            writer = cfg.instantiate(parent=None)
+            step_times = [2.0] * 50
+
+            writer.log_average_step_time(step=50, step_times=step_times)
+            self.assertIsNone(self._read_average_step_time(tempdir, step=50))
+
+            writer.log_average_step_time(step=100, step_times=step_times)
+            self.assertAlmostEqual(self._read_average_step_time(tempdir, step=100), 2.0)
+
+    def test_composite_writer_delegates(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            writer = (
+                CompositeWriter.default_config()
+                .set(
+                    name="test",
+                    dir=tempdir,
+                    writers={
+                        "fast": SummaryWriter.default_config().set(write_every_n_steps=5),
+                        "slow": SummaryWriter.default_config().set(write_every_n_steps=10),
+                    },
+                )
+                .instantiate(parent=None)
+            )
+            step_times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+
+            fast_dir = os.path.join(tempdir, "fast")
+            slow_dir = os.path.join(tempdir, "slow")
+
+            writer.log_average_step_time(step=5, step_times=step_times[:5])
+            self.assertAlmostEqual(self._read_average_step_time(fast_dir, step=5), 3.0)
+            self.assertIsNone(self._read_average_step_time(slow_dir, step=5))
+
+            writer.log_average_step_time(step=10, step_times=step_times)
+            self.assertAlmostEqual(self._read_average_step_time(fast_dir, step=10), 8.0)
+            self.assertAlmostEqual(self._read_average_step_time(slow_dir, step=10), 5.5)
 
 
 if __name__ == "__main__":

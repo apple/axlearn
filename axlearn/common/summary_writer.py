@@ -89,6 +89,19 @@ class BaseWriter(Module):
             step: Training step.
         """
 
+    def log_average_step_time(self, step: int, step_times: Sequence[float]):
+        """Log the average step time.
+
+        The default implementation writes the average over all step_times every 100 steps.
+        Derived writers may override to use their own interval and window.
+
+        Args:
+            step: The current step.
+            step_times: A buffer of recent step times (most recent last), of length <= 100.
+        """
+        if step % 100 == 0 and step_times:
+            self(step, {"average_step_time": _average_step_time(step_times, len(step_times))})
+
     # We adapt the args and kwargs from base Module to arguments specific to summary writer,
     # and drop the method argument since the caller does not decide which method to call.
     # pylint: disable=arguments-differ
@@ -136,6 +149,10 @@ class CompositeWriter(BaseWriter):
         writer: BaseWriter
         for writer in self._writers:
             writer(step, values)
+
+    def log_average_step_time(self, step: int, step_times: Sequence[float]):
+        for writer in self._writers:
+            writer.log_average_step_time(step, step_times)
 
     def log_checkpoint(
         self,
@@ -274,6 +291,14 @@ class SummaryWriter(BaseWriter):
         else:
             n_steps = cfg.write_every_n_steps_map.get(kind, cfg.write_every_n_steps)
             return step % n_steps == 0
+
+    def log_average_step_time(self, step: int, step_times: Sequence[float]):
+        cfg = self.config
+        if step % cfg.write_every_n_steps != 0:
+            return
+        average = _average_step_time(step_times, cfg.write_every_n_steps)
+        if average is not None:
+            self(step, {"average_step_time": average})
 
     def __call__(self, step: int, values: dict[str, Any]):
         cfg = self.config
@@ -518,6 +543,14 @@ class WandBWriter(BaseWriter):
             n_steps = cfg.write_every_n_steps_map.get(kind, cfg.write_every_n_steps)
             return step % n_steps == 0
 
+    def log_average_step_time(self, step: int, step_times: Sequence[float]):
+        cfg = self.config
+        if step % cfg.write_every_n_steps != 0:
+            return
+        average = _average_step_time(step_times, cfg.write_every_n_steps)
+        if average is not None:
+            self(step, {"average_step_time": average})
+
     def __call__(self, step: int, values: dict[str, Any]) -> None:
         """Convert nested summary values to wandb acceptable format and upload run data."""
         cfg = self.config
@@ -617,3 +650,21 @@ def _prepare_for_d2h(values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, 
     prepared = jax.device_get(prepared)
     paths = tree_paths(values, separator="/", is_leaf=_is_summary_leaf)
     return prepared, paths
+
+
+def _average_step_time(step_times: Sequence[float], window: int) -> Optional[float]:
+    """Computes the average step time over the last `window` entries.
+
+    Args:
+        step_times: A buffer of recent step times (most recent last).
+        window: Number of most recent entries to average over.
+
+    Returns:
+        The average, or None if the average step time cannot be computed.
+    """
+    if not step_times:
+        return None
+    n = min(window, len(step_times))
+    if n <= 0:
+        return None
+    return sum(list(step_times)[-n:]) / n
