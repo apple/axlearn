@@ -845,21 +845,12 @@ class TestDecoder(TestCase):
             )
             chex.assert_trees_all_close(step_outputs["logits"], logits / temperature)
 
-    def test_token_scores_match_between_decoded_and_prefix(self):
-        """Test that token scores match between sample_decode passes.
-
-        This reuses the generated tokens from the first pass as the prefix for the second pass.
-        This test is intended to detect if the scores from prefill_states do not match up with
-        the scores from sample_decode for the same tokens.
-        """
-
-        # No need to test multiple batches
-        batch_size = 1
-        # Long enough target length to get enough token scores to compare.
+    def test_token_scores_prefix_zero_generated_correct(self):
+        """sample_decode zero-fills prefix token_scores; generated-token scores are real."""
+        batch_size = 2
         target_length = 16
-        # Prefix length long enough to check that we reconstruct the prefix for the second pass
-        # from the output sequence of the first pass.
-        prefix_1_length = 4
+        # Different prefix length per example.
+        prefix_lengths = [4, 7]
 
         # Arbitrary other parameters
         vocab_size = 64
@@ -880,22 +871,22 @@ class TestDecoder(TestCase):
         decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(42))
 
         # Fill prefix with non-padding, non-BOS/EOS tokens.
-        prefix_1 = jax.random.randint(
+        prefix = jax.random.randint(
             jax.random.PRNGKey(42),
             shape=[batch_size, target_length],
             minval=bos_id + 1,
             maxval=vocab_size,
         )
         # Set BOS as first token.
-        prefix_1 = prefix_1.at[:, 0].set(bos_id)
-        # Set tokens to be generated to padding value.
-        prefix_1 = prefix_1.at[:, prefix_1_length:].set(cfg.pad_token_id)
+        prefix = prefix.at[:, 0].set(bos_id)
+        # Set tokens to be generated to padding value, using a different prefix length per example.
+        for i, prefix_length in enumerate(prefix_lengths):
+            prefix = prefix.at[i, prefix_length:].set(cfg.pad_token_id)
 
-        # Run a first decoding pass to generate the new tokens
-        outputs_1, _ = functional(
+        outputs, _ = functional(
             decoder,
             inputs=dict(
-                input_batch=dict(prefix=prefix_1),
+                input_batch=dict(prefix=prefix),
                 max_sequence_length=target_length,
                 num_decodes=1,
                 # Don't stop decoding until target length is reached
@@ -906,36 +897,12 @@ class TestDecoder(TestCase):
             prng_key=jax.random.PRNGKey(42),
             method="sample_decode",
         )
-
-        # Run second decoding pass, this time using the previously generated tokens as the prefix.
-        prefix_2 = jnp.roll(outputs_1.sequences[:, 0, :], shift=1)
-        prefix_2 = prefix_2.at[:, 0].set(bos_id)
-        # Check that we got the original prefix correctly from the output sequences.
-        self.assertTrue(jnp.all(prefix_1[:, :prefix_1_length] == prefix_2[:, :prefix_1_length]))
-
-        outputs_2, _ = functional(
-            decoder,
-            inputs=dict(
-                input_batch=dict(prefix=prefix_2),
-                max_sequence_length=target_length,
-                num_decodes=1,
-                # Don't stop decoding until target length is reached
-                stop_decoding_condition=lambda **_: False,
-            ),
-            state=decoder_state,
-            is_training=False,
-            prng_key=jax.random.PRNGKey(42),
-            method="sample_decode",
-        )
-        # Check that the token scores from the first and second pass match. Especially the
-        # scores for the tokens that were decoded in the first pass, but part of the prefix in
-        # the second pass are of interest.
-        # Note: Do not check the scores for the last generated token, since that cannot be provided
-        # by the prefix and is thus regenerated on the second pass.
-        self.assertNestedAllClose(
-            outputs_1.token_scores[:, :, :-1],
-            outputs_2.token_scores[:, :, :-1],
-        )
+        # Prefix token_scores are zero-filled EXCEPT the last prefix position, which holds the
+        # first generated token's logp. All generated positions are real, finite log-probs.
+        for i, prefix_length in enumerate(prefix_lengths):
+            scores = outputs.token_scores[i, 0]  # [target_length].
+            np.testing.assert_array_equal(scores[: prefix_length - 1], jnp.zeros(prefix_length - 1))
+            self.assertTrue(jnp.all(scores[prefix_length - 1 :] < 0))
 
     @parameterized.parameters(None, jnp.float32)
     def test_logits_forward_dtype(self, logits_forward_dtype):

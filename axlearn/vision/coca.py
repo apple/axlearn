@@ -675,6 +675,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         )
         return dict(transformer_state=init_state)
 
+    # TODO(dhwang2): Change the decoding APIs to be consistent with Decoder.
     def prefill_states(
         self,
         *,
@@ -705,7 +706,11 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
-        logits, hidden_states = self.lm_head(transformer_data.data)
+        # Only the last valid position's logits are needed to sample the first generated token, so
+        # gather that hidden state before the LM head — yielding [B, 1, V] instead of [B, T, V].
+        last_idx = jnp.maximum(time_step - 1, 0)  # [B]
+        last_hidden = jnp.take_along_axis(transformer_data.data, last_idx[:, None, None], axis=1)
+        logits, hidden_states = self.lm_head(last_hidden)
         states = dict(transformer_state=transformer_state)
         return states, dict(logits=logits, hidden_states=hidden_states)
 
