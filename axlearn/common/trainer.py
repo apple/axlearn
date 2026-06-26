@@ -33,6 +33,7 @@ from axlearn.common.config import (
     config_class,
     maybe_instantiate,
     maybe_set_config,
+    config_for_class,
 )
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.input_base import Input
@@ -49,6 +50,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
+from axlearn.common.snapshot import Snapshotter
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
@@ -70,26 +72,63 @@ from axlearn.common.utils import (
 )
 
 
-def store_class_vars(obj: Any) -> Any:
-    """Stores class and instance variables of an object into a new dummy instance."""
-    store = obj.__class__.__new__(obj.__class__)
-    for k, v in obj.__class__.__dict__.items():
-        if not isinstance(v, property):
-            setattr(store, k, v)
+def _sync_restore_class_vars(
+    jax_device_state: dict, python_vars: dict, immutable_data: dict
+) -> Any:
+    """Initializes SpmdTrainer, restores its state, and runs it."""
+    import copy
+    trainer = SpmdTrainer.__new__(SpmdTrainer)
+    prng_key = jax_device_state["_trainer_state"].prng_key
+    for state_dict in (jax_device_state, python_vars, immutable_data):
+        for k, v in state_dict.items():
+            setattr(trainer, k, v)
+            
+    trainer._is_restored = True
+
+    if hasattr(trainer, "_children"):
+        trainer._children = copy.copy(trainer._children)
+        if "checkpointer" in trainer._children:
+            trainer._children["checkpointer"] = copy.copy(trainer._children["checkpointer"])
+            trainer._children["checkpointer"]._within_context = False
+            trainer._children["checkpointer"]._gc_thread = None
+            trainer._children["checkpointer"]._gc_stopping = None
+            
+    trainer._watchdog_thread = None
+    trainer._watchdog_stopping = None
+    trainer._device_monitor = None
+    trainer._recorder = None
+    trainer.__post_init__()
+
+    return trainer.run(prng_key)
+
+def _sync_store_class_vars(obj: Any) -> None:
+    """Stores instance variables of an object."""
+    if getattr(obj, "_is_restored", False):
+        return
+    
+    print("_sync_store_class_vars")
+    
+    # Initialize dictionaries for refactored iteration
+    jax_device_state = {}
+    python_vars = {}
+    immutable_data = {}
+
     for k, v in obj.__dict__.items():
-        setattr(store, k, v)
-    return store
+        if isinstance(v, property):
+            continue
+        
+        if k in ("_trainer_state", "_mesh", "_jit_train_step", "_compiled_train_step", "model", "learner"):
+            jax_device_state[k] = v
+        elif "config" in k or "spec" in k or isinstance(v, (int, float, str, bool)):
+            immutable_data[k] = v
+        else:
+            python_vars[k] = v
 
-
-def restore_class_vars(obj: Any, store: Any):
-    """Restores class and instance variables to an object from a store."""
-    for k, v in obj.__class__.__dict__.items():
-        if not isinstance(v, property) and k in store.__dict__:
-            setattr(obj.__class__, k, store.__dict__[k])
-    for k, v in store.__dict__.items():
-        if k not in obj.__class__.__dict__ or k in obj.__dict__:
-            setattr(obj, k, v)
-
+    #print(jax_device_state)
+    print(python_vars)
+    print(immutable_data)
+    _sync_restore_class_vars(jax_device_state, python_vars, immutable_data)
+    
 
 class TrainerState(NamedTuple):
     prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
@@ -401,6 +440,7 @@ class SpmdTrainer(Module):
                     model_param_partition_specs=model_param_partition_specs,
                 )
         self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
+        
 
     @property
     def step(self):
@@ -638,7 +678,9 @@ class SpmdTrainer(Module):
 
             self._is_initialized = True
             #### Stores the initial state of all variables ####
-            self._class_vars = store_class_vars(self)
+            replica_axis_idx = cfg.mesh_axis_names.index("data") if "data" in cfg.mesh_axis_names else 0
+            snapshot_cfg = config_for_class(Snapshotter).set(replica_axis_index=replica_axis_idx)
+            self.snapshot_mgr = snapshot_cfg.instantiate()
             
 
             with self.checkpointer:
@@ -676,9 +718,10 @@ class SpmdTrainer(Module):
                             ),
                         )
                         self.vlog(3, "Done step %s", self.step)
-                        self._class_vars = store_class_vars(self)
-                        
-                        restore_class_vars(self, self._class_vars)
+                        if self.step==3:
+                            _sync_store_class_vars(self)
+
+                        #restore_class_vars(self, self._class_vars)
                         
                         num_steps += 1
                         if num_steps % 100 == 0:
