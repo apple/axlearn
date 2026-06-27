@@ -3,6 +3,8 @@
 """Tests bundling utilities."""
 
 import contextlib
+import os
+import tempfile
 from unittest import mock
 
 from absl.testing import absltest, parameterized
@@ -213,6 +215,40 @@ class CloudBuildBundlerTest(TestCase):
                 ):
                     b.wait_until_finished("test-name")
                 self.assertEqual(2, mock_status.call_count)
+
+    @parameterized.parameters(False, True, None)
+    def test_build_and_push(self, parallel):
+        cfg = self._get_test_cloud_build_bundler().set(
+            sidecars=["sidecar1"],
+            parallel=parallel,
+        )
+        b = cfg.instantiate()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dockerfile = os.path.join(temp_dir, "Dockerfile")
+            with open(dockerfile, "w", encoding="utf-8") as f:
+                f.write("FROM alpine")
+
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.MagicMock(returncode=0)
+                b._build_and_push(
+                    dockerfile=dockerfile,
+                    image="test-repo/test-image:tag",
+                    args={"arg1": "val1"},
+                    context=temp_dir,
+                    labels={"label1": "val1"},
+                )
+
+                # Verify cloudbuild.yaml
+                cloudbuild_yaml_file = os.path.join(temp_dir, "cloudbuild.yaml")
+                self.assertTrue(os.path.exists(cloudbuild_yaml_file))
+                with open(cloudbuild_yaml_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if parallel:
+                        self.assertIn('waitFor: ["-"]', content)
+                    else:
+                        self.assertNotIn("waitFor:", content)
+                    self.assertIn('id: "build-main"', content)
+                    self.assertIn('id: "build-sidecar1"', content)
 
 
 class RegionFromWorkerPoolTest(TestCase):

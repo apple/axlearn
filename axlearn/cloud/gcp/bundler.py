@@ -183,6 +183,7 @@ class CloudBuildBundler(BaseDockerBundler):
             timeout_seconds: CloudBuild timeout in seconds. Applied both server-side (via the
                 `timeout:` field in cloudbuild.yaml) and to the client-side polling in
                 `wait_until_finished()`.
+            parallel: Whether to build main and sidecar images in parallel.
         """
 
         # GCP project.
@@ -191,6 +192,7 @@ class CloudBuildBundler(BaseDockerBundler):
         is_async: bool = True
         private_worker_pool: Optional[str] = None
         timeout_seconds: int = 3600
+        parallel: Optional[bool] = None
 
     @classmethod
     def from_spec(
@@ -202,6 +204,8 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         cfg.is_async = to_bool(cfg.is_async)
         cfg.timeout_seconds = int(cfg.timeout_seconds)
+        if cfg.parallel is not None:
+            cfg.parallel = to_bool(cfg.parallel)
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
@@ -234,9 +238,14 @@ class CloudBuildBundler(BaseDockerBundler):
         build_steps = []
         images_list = [f'"{image}"', f'"{latest_tag}"']
 
+        # The '-' indicates that this step begins immediately.
+        wait_for = 'waitFor: ["-"]' if cfg.parallel else ""
+
         # Main image build step
         build_steps.append(
             f"""- name: "gcr.io/cloud-builders/docker"
+  id: "build-main"
+  {wait_for}
   args: [
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
@@ -264,6 +273,8 @@ class CloudBuildBundler(BaseDockerBundler):
 
             build_steps.append(
                 f"""- name: "gcr.io/cloud-builders/docker"
+  id: "build-{sidecar}"
+  {wait_for}
   args: [
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
