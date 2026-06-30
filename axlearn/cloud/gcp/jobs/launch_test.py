@@ -579,6 +579,149 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             self.assertIsNone(job._runner)
 
     @parameterized.parameters(
+        # init_replicas explicitly set above min.
+        dict(scaling_min=2, scaling_max=8, init=5, expected_init=5),
+        # init_replicas omitted -> ScalingSpec.init_replicas is None.
+        dict(scaling_min=2, scaling_max=8, init=None, expected_init=None),
+    )
+    def test_scaling_specs_from_flags(self, scaling_min, scaling_max, init, expected_init):
+        # Construct flags as in test_tpu_flags but enabling scaling.
+        fv = flags.FlagValues()
+        _prelaunch_flags(fv=fv)
+        fv.set_default("gcp_api", GCPAPI.GKE.lower())
+        fv.mark_as_parsed()
+        cfg = BastionManagedGKEJob.default_config().set(
+            runner=named_runner_configs("gke_tpu_single")
+        )
+        define_flags(cfg, fv)
+        argv = [
+            "cli",
+            "--bundler_spec=image=test",
+            "--instance_type=tpu-v4-8",
+            "--num_replicas=2",
+            f"--min_replicas={scaling_min}",
+            f"--max_replicas={scaling_max}",
+        ]
+        if init is not None:
+            argv.append(f"--init_replicas={init}")
+        fv(argv)
+
+        cfg = from_flags(cfg, fv, action="start", command="test command")
+        self.assertEqual(len(cfg.scaling_specs), 1)
+        spec = cfg.scaling_specs[0]
+        self.assertEqual(spec.min_replicas, scaling_min)
+        self.assertEqual(spec.max_replicas, scaling_max)
+        self.assertEqual(spec.init_replicas, expected_init)
+        self.assertEqual(spec.resources_per_replica, {"v4": 8})
+        # --num_replicas is not touched by the launcher.
+        self.assertEqual(fv.num_replicas, 2)
+
+    def test_scaling_max_replicas_required(self):
+        # --min_replicas without --max_replicas is rejected.
+        fv = flags.FlagValues()
+        _prelaunch_flags(fv=fv)
+        fv.set_default("gcp_api", GCPAPI.GKE.lower())
+        fv.mark_as_parsed()
+        cfg = BastionManagedGKEJob.default_config().set(
+            runner=named_runner_configs("gke_tpu_single")
+        )
+        define_flags(cfg, fv)
+        argv = [
+            "cli",
+            "--bundler_spec=image=test",
+            "--instance_type=tpu-v4-8",
+            "--num_replicas=2",
+            "--min_replicas=2",
+        ]
+        fv(argv)
+        with self.assertRaisesRegex(ValueError, "--max_replicas is required"):
+            from_flags(cfg, fv, action="start", command="test command")
+
+    def test_init_replicas_requires_min_max(self):
+        # --init_replicas without --min_replicas is rejected.
+        fv = flags.FlagValues()
+        _prelaunch_flags(fv=fv)
+        fv.set_default("gcp_api", GCPAPI.GKE.lower())
+        fv.mark_as_parsed()
+        cfg = BastionManagedGKEJob.default_config().set(
+            runner=named_runner_configs("gke_tpu_single")
+        )
+        define_flags(cfg, fv)
+        argv = [
+            "cli",
+            "--bundler_spec=image=test",
+            "--instance_type=tpu-v4-8",
+            "--num_replicas=2",
+            "--init_replicas=4",
+        ]
+        fv(argv)
+        with self.assertRaisesRegex(ValueError, "--init_replicas requires --min_replicas"):
+            from_flags(cfg, fv, action="start", command="test command")
+
+    @parameterized.parameters(
+        dict(
+            argv_extras=["--min_replicas=0", "--max_replicas=4"],
+            error_match=r"--min_replicas must be >= 1",
+        ),
+        dict(
+            argv_extras=["--min_replicas=4", "--max_replicas=2"],
+            error_match=r"--max_replicas .* must be >= --min_replicas",
+        ),
+        dict(
+            argv_extras=["--min_replicas=2", "--max_replicas=8", "--init_replicas=10"],
+            error_match=r"--init_replicas .* must be in",
+        ),
+        dict(
+            argv_extras=["--min_replicas=2", "--max_replicas=8", "--init_replicas=1"],
+            error_match=r"--init_replicas .* must be in",
+        ),
+    )
+    def test_scaling_flag_value_validation(self, argv_extras, error_match):
+        # Invalid --min/--max/--init combinations are rejected at launch time.
+        fv = flags.FlagValues()
+        _prelaunch_flags(fv=fv)
+        fv.set_default("gcp_api", GCPAPI.GKE.lower())
+        fv.mark_as_parsed()
+        cfg = BastionManagedGKEJob.default_config().set(
+            runner=named_runner_configs("gke_tpu_single")
+        )
+        define_flags(cfg, fv)
+        argv = [
+            "cli",
+            "--bundler_spec=image=test",
+            "--instance_type=tpu-v4-8",
+            "--num_replicas=2",
+            *argv_extras,
+        ]
+        fv(argv)
+        with self.assertRaisesRegex(ValueError, error_match):
+            from_flags(cfg, fv, action="start", command="test command")
+
+    def test_scaling_specs_topology_for_7x(self):
+        # Multi-host TPUs (7x) get topology_per_replica set on the spec
+        # so aggregate_topology produces a non-empty list.
+        fv = flags.FlagValues()
+        _prelaunch_flags(fv=fv)
+        fv.set_default("gcp_api", GCPAPI.GKE.lower())
+        fv.mark_as_parsed()
+        cfg = BastionManagedGKEJob.default_config().set(
+            runner=named_runner_configs("gke_tpu_single")
+        )
+        define_flags(cfg, fv)
+        argv = [
+            "cli",
+            "--bundler_spec=image=test",
+            "--instance_type=tpu-7x-128",
+            "--num_replicas=4",
+            "--min_replicas=2",
+            "--max_replicas=8",
+        ]
+        fv(argv)
+        cfg = from_flags(cfg, fv, action="start", command="test command")
+        self.assertEqual(len(cfg.scaling_specs), 1)
+        self.assertEqual(cfg.scaling_specs[0].topology_per_replica, "7x-128")
+
+    @parameterized.parameters(
         dict(name="test_job", expected=ValueError("invalid characters")),
         dict(name="test-job", expected=None),
     )

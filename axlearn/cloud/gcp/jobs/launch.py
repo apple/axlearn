@@ -117,8 +117,9 @@ from absl import app, flags, logging
 from axlearn.cloud.common.bastion import BastionDirectory, new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
-from axlearn.cloud.common.job_types import JobSpec, ResourceMap, Topology
+from axlearn.cloud.common.job_types import JobSpec, ResourceMap, ScalingSpec, Topology
 from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
+from axlearn.cloud.common.scaling import aggregate_min_resources, aggregate_topology
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.utils import (
     FlagConfigurable,
@@ -148,7 +149,9 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     with_k8s_jobset_state,
 )
 from axlearn.cloud.gcp.runners.base import BaseRunnerJob
+from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_resources
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config, running_from_vm
+from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
@@ -239,6 +242,9 @@ class BaseBastionManagedJob(FlagConfigurable):
         # If True, wait for a job to stop when cancelling.
         # Default to None for backwards compatibility.
         wait_for_stop: Optional[bool] = None
+        # Elastic scaling specs. Built from --min_replicas / --max_replicas /
+        # --init_replicas flags.
+        scaling_specs: Optional[list[ScalingSpec]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -279,6 +285,24 @@ class BaseBastionManagedJob(FlagConfigurable):
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
+        flags.DEFINE_integer(
+            "min_replicas",
+            None,
+            "Minimum replica count for elastic scaling.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "max_replicas",
+            None,
+            "Maximum replica count for elastic scaling.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "init_replicas",
+            None,
+            "Initial replica count for elastic scaling. Defaults to min_replicas when unset.",
+            **common_kwargs,
+        )
         flags.DEFINE_bool(
             "wait_for_stop",
             None,
@@ -317,6 +341,46 @@ class BaseBastionManagedJob(FlagConfigurable):
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
             cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
+
+        # Build scaling specs from flags if scaling is configured.
+        if fv.min_replicas is not None:
+            if fv.max_replicas is None:
+                raise ValueError("--max_replicas is required when --min_replicas is set.")
+            if fv.min_replicas < 1:
+                raise ValueError(f"--min_replicas must be >= 1, got {fv.min_replicas}.")
+            if fv.max_replicas < fv.min_replicas:
+                raise ValueError(
+                    f"--max_replicas ({fv.max_replicas}) must be "
+                    f">= --min_replicas ({fv.min_replicas})."
+                )
+            if fv.init_replicas is not None and not (
+                fv.min_replicas <= fv.init_replicas <= fv.max_replicas
+            ):
+                raise ValueError(
+                    f"--init_replicas ({fv.init_replicas}) must be in "
+                    f"[--min_replicas, --max_replicas] = "
+                    f"[{fv.min_replicas}, {fv.max_replicas}]."
+                )
+            resources_per_replica = infer_tpu_resources(fv.instance_type, 1)
+            # Multi-host TPUs (e.g. 7x) need a topology so the bastion's
+            # topology scheduler can place each replica. The same string
+            # format used by `infer_topologies`.
+            topology_per_replica = None
+            if "7x" in resources_per_replica:
+                tpu_type = infer_tpu_type(fv.instance_type)
+                topology_per_replica = f"{infer_tpu_version(tpu_type)}-{infer_tpu_cores(tpu_type)}"
+            cfg.scaling_specs = [
+                ScalingSpec(
+                    min_replicas=fv.min_replicas,
+                    max_replicas=fv.max_replicas,
+                    init_replicas=fv.init_replicas,
+                    resources_per_replica=resources_per_replica,
+                    topology_per_replica=topology_per_replica,
+                )
+            ]
+        elif fv.init_replicas is not None:
+            raise ValueError("--init_replicas requires --min_replicas / --max_replicas to be set.")
+
         # Construct runner only for start and update.
         if action in _RUNNER_ACTIONS:
             # We construct a bundler and propagate to runner during instantiate, ensuring the
@@ -418,6 +482,12 @@ class BaseBastionManagedJob(FlagConfigurable):
             if "7x" in resources:
                 topologies = cfg.topologies(cfg)
 
+            # If scaling specs are set, derive resources and topologies
+            # from them so the JobSpec is internally consistent.
+            if cfg.scaling_specs:
+                resources = aggregate_min_resources(cfg.scaling_specs)
+                topologies = aggregate_topology(cfg.scaling_specs) or None
+
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
@@ -426,6 +496,7 @@ class BaseBastionManagedJob(FlagConfigurable):
                 topologies=topologies,
                 priority=cfg.priority,
                 job_id=job_id,
+                scaling_specs=cfg.scaling_specs,
             )
 
             process_start_time = psutil.Process().create_time()
