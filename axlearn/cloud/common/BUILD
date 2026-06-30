@@ -175,6 +175,7 @@ py_library(
     deps = [
         ":job_types",
         ":quota",
+        ":replica_manager",
         "//axlearn/common:config",
         "@axlearn_pip//absl_py",
     ],

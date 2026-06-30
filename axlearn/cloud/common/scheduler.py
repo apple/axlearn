@@ -19,6 +19,7 @@ from typing import Any, NamedTuple, Optional, Protocol
 from absl import logging
 
 from axlearn.cloud.common.job_types import (
+    DEFAULT_SCALING_SPEC_NAME,
     JobMetadata,
     JobQueue,
     JobStateMetadata,
@@ -26,8 +27,11 @@ from axlearn.cloud.common.job_types import (
     ProjectResourceMap,
     ResourceMap,
     ResourceType,
+    ScalingSpec,
+    Topology,
 )
 from axlearn.cloud.common.quota import QuotaFn
+from axlearn.cloud.common.replica_manager import DESIRED_REPLICAS_KEY, GRANTED_REPLICAS_KEY
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -646,6 +650,13 @@ class ReportingScheduler(BaseScheduler):
         return schedule_results
 
 
+class _SlotInfo(NamedTuple):
+    """Tracks which parent job and scaling spec an expansion slot belongs to."""
+
+    parent_job: str
+    name: str
+
+
 class JobScheduler(Configurable):
     """Schedules jobs, possibly onto multiple tiers of quotas."""
 
@@ -699,9 +710,12 @@ class JobScheduler(Configurable):
         Returns:
             The scheduling results.
         """
+        # Expand elastic jobs into base + expansion slots.
+        expanded_metadata, slot_info = self._expand_elastic_jobs(job_metadata, job_state_metadata)
+
         # Group jobs by project.
         project_jobs = collections.defaultdict(dict)
-        for job_name, metadata in job_metadata.items():
+        for job_name, metadata in expanded_metadata.items():
             project_jobs[metadata.project_id][job_name] = metadata
 
         # Sort jobs according to priority.
@@ -722,6 +736,11 @@ class JobScheduler(Configurable):
             verbosity=verbosity,
         )
 
+        # Collapse expansion slot verdicts back into parent jobs.
+        schedule_results = self._collapse_expansion_verdicts(
+            schedule_results, slot_info, job_metadata
+        )
+
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:
             project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
@@ -734,3 +753,158 @@ class JobScheduler(Configurable):
                 job_verdicts={job_name: JobVerdict() for job_name in schedule_results.job_verdicts},
             )
         return schedule_results
+
+    def _expand_elastic_jobs(
+        self,
+        job_metadata: dict[str, JobMetadata],
+        job_state_metadata: dict[str, JobStateMetadata],
+    ) -> tuple[dict[str, JobMetadata], dict[str, _SlotInfo]]:
+        """Expand elastic jobs into base job + expansion slots.
+
+        Each expansion slot represents one additional replica for a scaling group.
+        Slots compete in the normal scheduler priority queue alongside all other jobs.
+
+        This method is stateless: every cycle, all slots from min_replicas to target
+        are injected from scratch.
+
+        Args:
+            job_metadata: Original job metadata mapping.
+            job_state_metadata: Current job state metadata.
+
+        Returns:
+            Tuple of (expanded_metadata, slot_info) where slot_info maps slot names
+            to their parent job and name for use during collapse.
+        """
+        expanded = dict(job_metadata)
+        slot_info: dict[str, _SlotInfo] = {}
+
+        for job_name, metadata in job_metadata.items():
+            if not metadata.scaling_specs:
+                continue
+
+            for spec in metadata.scaling_specs:
+                target = self._get_expansion_target(job_name, spec, job_state_metadata)
+                new_slots, new_info = self._create_expansion_slots(job_name, metadata, spec, target)
+                expanded.update(new_slots)
+                slot_info.update(new_info)
+
+        return expanded, slot_info
+
+    def _create_expansion_slots(
+        self,
+        job_name: str,
+        metadata: JobMetadata,
+        spec: ScalingSpec,
+        target: int,
+    ) -> tuple[dict[str, JobMetadata], dict[str, _SlotInfo]]:
+        """Create expansion slots for a single scaling spec.
+
+        Slots inherit the base job's `priority` and `creation_time` (via
+        `dataclasses.replace`) so they sort alongside the base in the
+        scheduler queue and contend for resources at the same urgency.
+
+        Returns:
+            Tuple of (slot_metadata, slot_info) dicts for the new slots.
+        """
+        slots = {}
+        info = {}
+        spec_name = spec.name or DEFAULT_SCALING_SPEC_NAME
+        for i in range(spec.min_replicas, target):
+            slot_name = f"{job_name}--exp-{spec_name}-{i}"
+            slot_meta = dataclasses.replace(
+                metadata,
+                resources=spec.resources_per_replica,
+                topologies=(
+                    [Topology(topology=spec.topology_per_replica, replicas=1)]
+                    if spec.topology_per_replica
+                    else None
+                ),
+                scaling_specs=None,
+            )
+            slots[slot_name] = slot_meta
+            info[slot_name] = _SlotInfo(parent_job=job_name, name=spec_name)
+        return slots, info
+
+    @staticmethod
+    def _get_expansion_target(
+        job_name: str, spec: ScalingSpec, job_state_metadata: dict[str, JobStateMetadata]
+    ) -> int:
+        """Determine how many replicas to expand to for a given spec."""
+        # Read requested_replicas dict from state metadata (written by runner).
+        # If not present, default to min_replicas (no expansion).
+        desired_replicas = job_state_metadata.get(job_name, {}).get(DESIRED_REPLICAS_KEY, {})
+        requested = desired_replicas.get(spec.name or DEFAULT_SCALING_SPEC_NAME, spec.min_replicas)
+        return min(int(requested), spec.max_replicas)
+
+    @classmethod
+    def _collapse_expansion_verdicts(
+        cls,
+        results: BaseScheduler.ScheduleResults,
+        slot_info: dict[str, _SlotInfo],
+        original_metadata: dict[str, JobMetadata],
+    ) -> BaseScheduler.ScheduleResults:
+        """Collapse expansion slot verdicts back into parent job verdicts.
+
+        Iterates over all verdicts. For expansion slots, aggregates their
+        results (count + topology) directly into the parent verdict.
+        Non-slot verdicts pass through unchanged.
+
+        Every elastic job (one with `scaling_specs`) gets `granted_replicas`
+        initialized to its per-spec `min_replicas` so the value is always
+        present in the verdict — even when desired==min (no expansion slots
+        created) or when no slots were admitted. This lets downstream
+        consumers (e.g. ReplicaManager) reliably observe the granted count
+        on every cycle and unwind scale-ups.
+        """
+        collapsed_verdicts = {}
+
+        # Pre-pass: initialize granted_replicas on every elastic parent.
+        for job_name, metadata in original_metadata.items():
+            if not metadata.scaling_specs:
+                continue
+            verdict = results.job_verdicts.get(job_name)
+            if not verdict:
+                continue
+            verdict.metadata[GRANTED_REPLICAS_KEY] = {
+                (spec.name or DEFAULT_SCALING_SPEC_NAME): spec.min_replicas
+                for spec in metadata.scaling_specs
+            }
+
+        for job_name, verdict in results.job_verdicts.items():
+            # Non-expansion-slot jobs (regular jobs and elastic parents) pass
+            # through to the collapsed verdicts unchanged.
+            if job_name not in slot_info:
+                collapsed_verdicts[job_name] = verdict
+                continue
+
+            # Expansion slot: aggregate into parent if both parent and slot admitted.
+            info = slot_info[job_name]
+            parent_verdict = results.job_verdicts.get(info.parent_job)
+            if not parent_verdict:
+                logging.warning(
+                    "Expansion slot %s admitted but its parent %s has no "
+                    "admitted verdict; dropping slot.",
+                    job_name,
+                    info.parent_job,
+                )
+                continue
+            if not verdict:
+                continue
+
+            # Increment granted count for this slot's spec. The base value was
+            # initialized to min_replicas in the pre-pass above.
+            granted = parent_verdict.metadata.get(GRANTED_REPLICAS_KEY, {})
+            granted[info.name] = granted.get(info.name, 0) + 1
+
+            # Merge topology assignment from slot into parent verdict.
+            topo = verdict.metadata.get("topology_assignment")
+            if topo:
+                parent_topo = parent_verdict.metadata.setdefault("topology_assignment", [])
+                parent_topo.extend(topo)
+
+        return BaseScheduler.ScheduleResults(
+            project_limits=results.project_limits,
+            project_usages=results.project_usages,
+            job_verdicts=collapsed_verdicts,
+            unused_limits=results.unused_limits,
+        )

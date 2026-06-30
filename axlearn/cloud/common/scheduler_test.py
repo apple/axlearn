@@ -11,13 +11,20 @@ from unittest import mock
 
 from absl.testing import absltest, parameterized
 
-from axlearn.cloud.common.job_types import JobStateMetadata, ResourceMap
+from axlearn.cloud.common.job_types import (
+    DEFAULT_SCALING_SPEC_NAME,
+    JobStateMetadata,
+    ResourceMap,
+    ScalingSpec,
+)
 from axlearn.cloud.common.quota import QuotaInfo
+from axlearn.cloud.common.replica_manager import GRANTED_REPLICAS_KEY
 from axlearn.cloud.common.scheduler import (
     BaseScheduler,
     JobMetadata,
     JobQueue,
     JobScheduler,
+    JobVerdict,
     PriorityFIFO,
     ProjectJobSorter,
     ReporterFn,
@@ -27,6 +34,7 @@ from axlearn.cloud.common.scheduler import (
     _compute_total_limits,
     _normalize_quotas,
     _recursively_to_dict,
+    _SlotInfo,
     composite_reporter,
 )
 from axlearn.common.config import ConfigOr, InstantiableConfig, config_for_function
@@ -1097,6 +1105,65 @@ class TestJobScheduler(parameterized.TestCase):
         # Fair-share ordering: c1 → d1 → c2.
         p2_order = [jid for jid in verdicts if jid in ("c1", "c2", "d1")]
         self.assertEqual(["c1", "d1", "c2"], p2_order, msg="project2 should use fair-share")
+
+
+class TestExpansionSlotCollapse(parameterized.TestCase):
+    """Tests _collapse_expansion_verdicts behavior for unadmitted parents."""
+
+    def _make_elastic_parent(self) -> JobMetadata:
+        return JobMetadata(
+            user_id="u",
+            project_id="p",
+            creation_time=datetime.now(),
+            resources={"v4": 8},
+            scaling_specs=[
+                ScalingSpec(
+                    min_replicas=1,
+                    max_replicas=4,
+                    resources_per_replica={"v4": 8},
+                )
+            ],
+        )
+
+    def test_admitted_slot_aggregates_into_admitted_parent(self):
+        # Baseline: when both parent and slot are admitted, the slot's
+        # admission count rolls up into the parent's granted_replicas.
+        original = {"parent": self._make_elastic_parent()}
+        slot_name = "parent--exp-default-1"
+        slot_info = {slot_name: _SlotInfo(parent_job="parent", name=DEFAULT_SCALING_SPEC_NAME)}
+        results = BaseScheduler.ScheduleResults(
+            project_limits={},
+            project_usages={},
+            job_verdicts={"parent": JobVerdict(), slot_name: JobVerdict()},
+        )
+        collapsed = JobScheduler._collapse_expansion_verdicts(results, slot_info, original)
+        # Slot is dropped from final verdicts; parent records min + 1 admitted slot.
+        self.assertNotIn(slot_name, collapsed.job_verdicts)
+        self.assertEqual(
+            collapsed.job_verdicts["parent"].metadata[GRANTED_REPLICAS_KEY],
+            {DEFAULT_SCALING_SPEC_NAME: 2},
+        )
+
+    def test_admitted_slot_dropped_when_parent_rejected(self):
+        # When a slot is admitted but its parent is rejected, the slot is
+        # dropped (does not contribute to granted_replicas) and the parent's
+        # granted count stays at the pre-pass min_replicas baseline.
+        original = {"parent": self._make_elastic_parent()}
+        slot_name = "parent--exp-default-1"
+        slot_info = {slot_name: _SlotInfo(parent_job="parent", name=DEFAULT_SCALING_SPEC_NAME)}
+        results = BaseScheduler.ScheduleResults(
+            project_limits={},
+            project_usages={},
+            job_verdicts={
+                "parent": JobVerdict(over_limits={"v4"}),
+                slot_name: JobVerdict(),
+            },
+        )
+        collapsed = JobScheduler._collapse_expansion_verdicts(results, slot_info, original)
+        self.assertNotIn(slot_name, collapsed.job_verdicts)
+        # An unadmitted parent doesn't get the granted_replicas pre-pass seeding
+        # because the pre-pass skips rejected verdicts (`if not verdict: continue`).
+        self.assertNotIn(GRANTED_REPLICAS_KEY, collapsed.job_verdicts["parent"].metadata)
 
 
 if __name__ == "__main__":
