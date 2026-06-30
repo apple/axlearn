@@ -122,6 +122,11 @@ from axlearn.cloud.common.job_types import (
     Topology,
 )
 from axlearn.cloud.common.quota import QuotaFn
+from axlearn.cloud.common.replica_manager import (
+    DESIRED_REPLICAS_KEY,
+    GRANTED_REPLICAS_KEY,
+    ReplicaManager,
+)
 from axlearn.cloud.common.scaling import aggregate_min_resources, aggregate_topology
 from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
@@ -916,6 +921,10 @@ class Bastion(Configurable):
         event_publisher: Optional[BaseQueueClient.Config] = None
         # Validator to determine if job is valid.
         validator: Optional[JobValidator.Config] = None
+        # Optional manager for elastic replica state. When set, Bastion calls
+        # it before/after each schedule cycle to fetch desired replicas and
+        # publish granted replicas for elastic jobs.
+        replica_manager: Optional[ReplicaManager.Config] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -964,6 +973,9 @@ class Bastion(Configurable):
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
         self._event_publisher = maybe_instantiate(cfg.event_publisher)
         self._validator = cfg.validator.instantiate() if cfg.validator else None
+        self._replica_manager: Optional[ReplicaManager] = (
+            cfg.replica_manager.instantiate() if cfg.replica_manager else None
+        )
 
     def _build_preemption_message(
         self,
@@ -1430,6 +1442,51 @@ class Bastion(Configurable):
 
         return job
 
+    def _populate_desired_replicas(
+        self,
+        schedulable_job_metadata: dict[str, JobMetadata],
+        schedulable_job_state_metadata: dict[str, JobStateMetadata],
+    ):
+        """Pulls desired replicas from the replica manager for elastic jobs.
+
+        The scheduler reads these from job_state_metadata during expansion.
+        Skips jobs without scaling_specs (non-elastic) and is a no-op when
+        no replica_manager is configured.
+        """
+        if self._replica_manager is None:
+            return
+        self._replica_manager.refresh()
+        for job_name, metadata in schedulable_job_metadata.items():
+            if not metadata.scaling_specs:
+                continue
+            desired = self._replica_manager.get_desired_replicas(job_name)
+            if desired is not None:
+                logging.info("Populated desired_replicas for %s: %s", job_name, dict(desired))
+                schedulable_job_state_metadata.setdefault(job_name, {})[DESIRED_REPLICAS_KEY] = (
+                    dict(desired)
+                )
+
+    def _publish_granted_replicas(self, schedule_results: BaseScheduler.ScheduleResults):
+        """Publishes granted replicas back to the replica manager.
+
+        Only elastic jobs (those with `granted_replicas` in their verdict
+        metadata) are forwarded. No-op when no replica_manager is configured.
+        """
+        if self._replica_manager is None:
+            return
+        for job_name, verdict in schedule_results.job_verdicts.items():
+            granted = verdict.metadata.get(GRANTED_REPLICAS_KEY)
+            if not granted:
+                continue
+            try:
+                self._replica_manager.set_granted_replicas(job_name, granted)
+            except Exception as e:  # pylint: disable=broad-except
+                logging.warning(
+                    "ReplicaManager.set_granted_replicas failed for %s: %s",
+                    job_name,
+                    e,
+                )
+
     def _update_jobs(self):
         """Handles state transitions for all jobs.
 
@@ -1449,6 +1506,8 @@ class Bastion(Configurable):
                 schedulable_job_metadata[job_name] = job.spec.metadata
                 schedulable_job_state_metadata[job_name] = job.state.metadata
 
+        self._populate_desired_replicas(schedulable_job_metadata, schedulable_job_state_metadata)
+
         # Decide which jobs to resume/pre-empt.
         schedule_options = self._get_runtime_options(
             "scheduler",
@@ -1460,6 +1519,8 @@ class Bastion(Configurable):
             dry_run=schedule_options["dry_run"],
             verbosity=schedule_options["verbosity"],
         )
+
+        self._publish_granted_replicas(schedule_results)
         self._append_to_history(schedulable_job_metadata, schedule_results)
         for job_name, verdict in schedule_results.job_verdicts.items():
             job = self._active_jobs[job_name]

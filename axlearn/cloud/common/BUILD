@@ -117,6 +117,7 @@ py_library(
         ":job_types",
         ":metrics",
         ":quota",
+        ":replica_manager",
         ":scaling",
         ":scheduler",
         ":uploader",
@@ -155,6 +156,15 @@ py_library(
         "//axlearn/common:file_system",
         "@axlearn_pip//absl_py",
         "@axlearn_pip//toml",
+    ],
+)
+
+py_library(
+    name = "replica_manager",
+    srcs = ["replica_manager.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//axlearn/common:config",
     ],
 )
 
