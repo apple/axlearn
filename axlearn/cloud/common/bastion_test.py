@@ -51,8 +51,15 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.job_types import JobMetadata, JobSpec, ResourceMap, Topology
+from axlearn.cloud.common.job_types import (
+    JobMetadata,
+    JobSpec,
+    ResourceMap,
+    ScalingSpec,
+    Topology,
+)
 from axlearn.cloud.common.quota import QuotaInfo
+from axlearn.cloud.common.scaling import aggregate_min_resources, aggregate_topology
 from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, JobVerdict
 from axlearn.cloud.common.scheduler_test import mock_quota_config
 from axlearn.cloud.common.uploader import Uploader
@@ -633,6 +640,253 @@ class TestJobSpec(parameterized.TestCase):
             ctx = contextlib.nullcontext()
         with ctx:
             _validate_jobspec(x)
+
+    def _spec_with_scaling(self, *, scaling_specs, resources, topologies=None):
+        """Helper: build a JobSpec without going through new_jobspec validation."""
+        return JobSpec(
+            version=1,
+            name="test_job",
+            command="cmd",
+            cleanup_command=None,
+            env_vars=None,
+            metadata=JobMetadata(
+                user_id="u",
+                project_id="p",
+                creation_time=datetime(1900, 1, 1),
+                resources=resources,
+                priority=5,
+                topologies=topologies,
+                scaling_specs=scaling_specs,
+            ),
+        )
+
+    def test_validate_jobspec_scaling_specs_consistent(self):
+        # baseline_resources/topologies match metadata → passes.
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(
+                    min_replicas=2,
+                    max_replicas=10,
+                    resources_per_replica={"v5p": 8},
+                    topology_per_replica="2x2x1",
+                )
+            ],
+            resources={"v5p": 16},
+            topologies=[Topology(topology="2x2x1", replicas=2)],
+        )
+        _validate_jobspec(spec)  # no raise
+
+    def test_validate_jobspec_scaling_specs_resources_mismatch(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(min_replicas=2, max_replicas=10, resources_per_replica={"v5p": 8})
+            ],
+            resources={"v5p": 8},  # should be 16
+        )
+        with self.assertRaisesRegex(ValidationError, "aggregate_min_resources"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_topologies_mismatch(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(
+                    min_replicas=2,
+                    max_replicas=10,
+                    resources_per_replica={"v5p": 8},
+                    topology_per_replica="2x2x1",
+                )
+            ],
+            resources={"v5p": 16},
+            topologies=None,  # should be [Topology("2x2x1", 2)]
+        )
+        with self.assertRaisesRegex(ValidationError, "aggregate_topology"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_min_below_one(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(min_replicas=0, max_replicas=10, resources_per_replica={"v5p": 8})
+            ],
+            resources={},
+        )
+        with self.assertRaisesRegex(ValidationError, "min_replicas>=1"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_min_above_max(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(min_replicas=5, max_replicas=2, resources_per_replica={"v5p": 8})
+            ],
+            resources={"v5p": 40},
+        )
+        with self.assertRaisesRegex(ValidationError, "min_replicas<=max_replicas"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_init_below_min(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(
+                    min_replicas=3,
+                    max_replicas=10,
+                    init_replicas=2,
+                    resources_per_replica={"v5p": 8},
+                )
+            ],
+            resources={"v5p": 24},
+        )
+        with self.assertRaisesRegex(ValidationError, "min_replicas<=init_replicas<=max_replicas"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_init_above_max(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(
+                    min_replicas=2,
+                    max_replicas=10,
+                    init_replicas=11,
+                    resources_per_replica={"v5p": 8},
+                )
+            ],
+            resources={"v5p": 16},
+        )
+        with self.assertRaisesRegex(ValidationError, "min_replicas<=init_replicas<=max_replicas"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_duplicate_names(self):
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(
+                    name="trainer",
+                    min_replicas=2,
+                    max_replicas=10,
+                    resources_per_replica={"v5p": 8},
+                ),
+                ScalingSpec(
+                    name="trainer",
+                    min_replicas=1,
+                    max_replicas=5,
+                    resources_per_replica={"cpu": 4},
+                ),
+            ],
+            resources={"v5p": 16, "cpu": 4},
+        )
+        with self.assertRaisesRegex(ValidationError, "Duplicate scaling spec name"):
+            _validate_jobspec(spec)
+
+    def test_validate_jobspec_scaling_specs_duplicate_default_names(self):
+        # Two unnamed specs both collapse to "default" → duplicate.
+        spec = self._spec_with_scaling(
+            scaling_specs=[
+                ScalingSpec(min_replicas=2, max_replicas=10, resources_per_replica={"v5p": 8}),
+                ScalingSpec(min_replicas=1, max_replicas=5, resources_per_replica={"cpu": 4}),
+            ],
+            resources={"v5p": 16, "cpu": 4},
+        )
+        with self.assertRaisesRegex(ValidationError, "Duplicate scaling spec name"):
+            _validate_jobspec(spec)
+
+    def test_deserialize_overrides_resources_and_topologies(self):
+        # When scaling_specs is set, resources/topologies are always
+        # derived from the spec at deserialization — any pre-existing
+        # values in the serialized data are overwritten.
+        from axlearn.cloud.common.bastion import _LATEST_BASTION_VERSION
+
+        spec = {
+            "version": _LATEST_BASTION_VERSION,
+            "name": "j",
+            "command": "cmd",
+            "cleanup_command": None,
+            "env_vars": None,
+            "metadata": {
+                "user_id": "u",
+                "project_id": "p",
+                "creation_time": "1900-01-01 00:00:00.000000",
+                # Pre-populated but inconsistent — should be overwritten.
+                "resources": {"v5p": 999},
+                "priority": 5,
+                "job_id": None,
+                "version": None,
+                "topologies": [{"topology": "stale", "replicas": 1}],
+                "scaling_specs": [
+                    {
+                        "min_replicas": 3,
+                        "max_replicas": 9,
+                        "init_replicas": None,
+                        "resources_per_replica": {"v5p": 4},
+                        "topology_per_replica": "2x2x1",
+                        "name": None,
+                    }
+                ],
+            },
+            "code_asset_path": None,
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(spec, f)
+            f.flush()
+            loaded = deserialize_jobspec(f.name)
+        self.assertEqual(loaded.metadata.resources, {"v5p": 12})
+        self.assertEqual(loaded.metadata.topologies, [Topology(topology="2x2x1", replicas=3)])
+
+    def test_deserialize_clears_topologies_when_spec_has_none(self):
+        # When a scaling spec has no topology_per_replica, the deserialized
+        # topologies field is set to None — even if the serialized value
+        # was non-empty.
+        from axlearn.cloud.common.bastion import _LATEST_BASTION_VERSION
+
+        spec = {
+            "version": _LATEST_BASTION_VERSION,
+            "name": "j",
+            "command": "cmd",
+            "cleanup_command": None,
+            "env_vars": None,
+            "metadata": {
+                "user_id": "u",
+                "project_id": "p",
+                "creation_time": "1900-01-01 00:00:00.000000",
+                "resources": {},
+                "priority": 5,
+                "job_id": None,
+                "version": None,
+                "topologies": [{"topology": "stale", "replicas": 1}],
+                "scaling_specs": [
+                    {
+                        "min_replicas": 2,
+                        "max_replicas": 4,
+                        "init_replicas": None,
+                        "resources_per_replica": {"cpu": 1},
+                        "topology_per_replica": None,
+                        "name": None,
+                    }
+                ],
+            },
+            "code_asset_path": None,
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(spec, f)
+            f.flush()
+            loaded = deserialize_jobspec(f.name)
+        self.assertEqual(loaded.metadata.resources, {"cpu": 2})
+        self.assertIsNone(loaded.metadata.topologies)
+
+    def test_aggregate_helpers(self):
+        # Direct unit test of the aggregation helpers — covers multi-spec
+        # and the topology-skip-when-None case.
+        specs = [
+            ScalingSpec(
+                min_replicas=2,
+                max_replicas=10,
+                resources_per_replica={"v5p": 8, "cpu": 1},
+                topology_per_replica="2x2x1",
+            ),
+            ScalingSpec(
+                min_replicas=3,
+                max_replicas=12,
+                resources_per_replica={"cpu": 2},
+                # No topology_per_replica → should be skipped in aggregate_topology.
+            ),
+        ]
+        self.assertEqual(aggregate_min_resources(specs), {"v5p": 16, "cpu": 8})
+        self.assertEqual(aggregate_topology(specs), [Topology(topology="2x2x1", replicas=2)])
 
 
 class MockJobValidator(JobValidator):

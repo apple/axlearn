@@ -117,6 +117,7 @@ py_library(
         ":job_types",
         ":metrics",
         ":quota",
+        ":scaling",
         ":scheduler",
         ":uploader",
         ":utils",
@@ -170,6 +171,15 @@ py_library(
 )
 
 py_library(
+    name = "scaling",
+    srcs = ["scaling.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":job_types",
+    ],
+)
+
+py_library(
     name = "job_types",
     srcs = ["job_types.py"],
     visibility = ["//visibility:public"],
@@ -201,6 +211,7 @@ py_test(
     deps = [
         ":bastion",
         ":job_types",
+        ":scaling",
         ":scheduler_test_lib",
         "//axlearn/common:config",
         "//axlearn/common:file_system",

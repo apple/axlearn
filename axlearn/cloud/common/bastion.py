@@ -113,13 +113,16 @@ from axlearn.cloud.common import metrics
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
 from axlearn.cloud.common.job_types import (
+    DEFAULT_SCALING_SPEC_NAME,
     JobMetadata,
     JobSpec,
     JobStateMetadata,
     ResourceType,
+    ScalingSpec,
     Topology,
 )
 from axlearn.cloud.common.quota import QuotaFn
+from axlearn.cloud.common.scaling import aggregate_min_resources, aggregate_topology
 from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
@@ -328,6 +331,48 @@ def _validate_jobspec(jobspec: JobSpec):
         raise ValidationError(f"Expected {jobspec.metadata=} to be JobMetadata.")
     _validate_job_metadata(jobspec.metadata)
 
+    # When scaling_specs is set, metadata.resources and metadata.topologies
+    # must describe the baseline (min_replicas) shape.
+    if jobspec.metadata.scaling_specs:
+        seen_names: set[str] = set()
+        for spec in jobspec.metadata.scaling_specs:
+            name = spec.name or DEFAULT_SCALING_SPEC_NAME
+            if name in seen_names:
+                raise ValidationError(f"Duplicate scaling spec name {name!r} in scaling_specs.")
+            seen_names.add(name)
+            if spec.min_replicas < 1:
+                raise ValidationError(
+                    f"Expected scaling spec {name!r} min_replicas>=1, got {spec.min_replicas=}."
+                )
+            if spec.min_replicas > spec.max_replicas:
+                raise ValidationError(
+                    f"Expected scaling spec {name!r} min_replicas<=max_replicas, "
+                    f"got {spec.min_replicas=}, {spec.max_replicas=}."
+                )
+            if spec.init_replicas is not None and not (
+                spec.min_replicas <= spec.init_replicas <= spec.max_replicas
+            ):
+                raise ValidationError(
+                    f"Expected scaling spec {name!r} "
+                    f"min_replicas<=init_replicas<=max_replicas, got "
+                    f"{spec.min_replicas=}, {spec.init_replicas=}, "
+                    f"{spec.max_replicas=}."
+                )
+
+        expected_resources = aggregate_min_resources(jobspec.metadata.scaling_specs)
+        if jobspec.metadata.resources != expected_resources:
+            raise ValidationError(
+                f"Expected {jobspec.metadata.resources=} to equal "
+                f"aggregate_min_resources(scaling_specs)={expected_resources}."
+            )
+        expected_topologies = aggregate_topology(jobspec.metadata.scaling_specs)
+        actual_topologies = jobspec.metadata.topologies or []
+        if actual_topologies != expected_topologies:
+            raise ValidationError(
+                f"Expected {jobspec.metadata.topologies=} to equal "
+                f"aggregate_topology(scaling_specs)={expected_topologies}."
+            )
+
 
 def new_jobspec(
     *,
@@ -392,6 +437,17 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             data["metadata"]["topologies"] = [
                 Topology(**topology) for topology in data["metadata"]["topologies"]
             ]
+        if data["metadata"].get("scaling_specs"):
+            data["metadata"]["scaling_specs"] = [
+                ScalingSpec(**spec) for spec in data["metadata"]["scaling_specs"]
+            ]
+            # If scaling spec is set, infer the base job spec resource
+            # requirements from the scaling specs.
+            data["metadata"]["resources"] = aggregate_min_resources(
+                data["metadata"]["scaling_specs"]
+            )
+            topologies = aggregate_topology(data["metadata"]["scaling_specs"])
+            data["metadata"]["topologies"] = topologies if topologies else None
         # Backwards compatible: only pass fields that JobMetadata currently supports.
         skipped = data["metadata"].keys() - _JOB_METADATA_FIELD_NAMES
         if skipped:

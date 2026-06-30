@@ -23,6 +23,22 @@ class Topology:
     replicas: int
 
 
+# Used in place of `ScalingSpec.name` when it is not explicitly set.
+DEFAULT_SCALING_SPEC_NAME = "default"
+
+
+@dataclasses.dataclass
+class ScalingSpec:
+    """Scaling bounds for one scaling group within a job."""
+
+    min_replicas: int
+    max_replicas: int
+    init_replicas: Optional[int] = None
+    resources_per_replica: dict[ResourceType, int] = dataclasses.field(default_factory=dict)
+    topology_per_replica: Optional[TopologyType] = None
+    name: Optional[str] = None
+
+
 @dataclasses.dataclass
 class JobMetadata:
     """Metadata for a bastion job."""
@@ -40,6 +56,8 @@ class JobMetadata:
     version: Optional[int] = None
     # Topologies required by the job
     topologies: Optional[list[Topology]] = None
+    # Elastic scaling configuration.
+    scaling_specs: Optional[list[ScalingSpec]] = None
 
 
 @dataclasses.dataclass
