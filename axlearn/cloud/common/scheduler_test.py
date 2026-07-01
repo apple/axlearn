@@ -682,6 +682,196 @@ class TierSchedulerTest(parameterized.TestCase):
         )
         self.assertEqual(schedule_result.unused_limits, unused_limits)
 
+    def test_parent_dependencies_admitted_admits_dependents(self):
+        # Parent fits, dependents fit -> all admitted. Without the gate
+        # firing, the verdicts should be indistinguishable from a normal
+        # schedule.
+        now = datetime.now()
+        project_jobs = {
+            "p": [
+                (
+                    "parent",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+                (
+                    "parent--exp-default-1",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+                (
+                    "parent--exp-default-2",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+            ],
+        }
+        sched: TierScheduler = TierScheduler.default_config().instantiate()
+        results = sched.schedule(
+            resource_limits=[{"v4": 12}],
+            project_quotas={"p": {"v4": 12}},
+            project_jobs=project_jobs,
+            job_state_metadata={},
+            parent_dependencies={
+                "parent--exp-default-1": "parent",
+                "parent--exp-default-2": "parent",
+            },
+        )
+        for name in ["parent", "parent--exp-default-1", "parent--exp-default-2"]:
+            self.assertTrue(results.job_verdicts[name].should_run(), name)
+            self.assertIsNone(results.job_verdicts[name].unmet_dependencies, name)
+        self.assertEqual({"v4": 12}, results.project_usages["p"])
+
+    def test_parent_dependencies_rejected_rejects_dependents_no_resource_consumption(self):
+        # Parent over project quota -> rejected. Dependents must follow
+        # without consuming resources, even though they would individually
+        # fit.
+        now = datetime.now()
+        project_jobs = {
+            "p": [
+                (
+                    "parent",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 100},
+                    ),
+                ),
+                (
+                    "parent--exp-default-1",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+            ],
+        }
+        sched: TierScheduler = TierScheduler.default_config().instantiate()
+        results = sched.schedule(
+            resource_limits=[{"v4": 12}],
+            project_quotas={"p": {"v4": 12}},
+            project_jobs=project_jobs,
+            job_state_metadata={},
+            parent_dependencies={"parent--exp-default-1": "parent"},
+        )
+        self.assertFalse(results.job_verdicts["parent"].should_run())
+        slot = results.job_verdicts["parent--exp-default-1"]
+        self.assertFalse(slot.should_run())
+        # Slot rejection is via unmet_dependencies, not over_limits.
+        self.assertIsNone(slot.over_limits)
+        self.assertEqual({"parent"}, slot.unmet_dependencies)
+        # No resources consumed for parent or slot. project_usages["p"]["v4"]
+        # may be present at 0 (autovivified during priority-queue sorting),
+        # so check the value rather than the absence of the key.
+        self.assertEqual(0, results.project_usages["p"].get("v4", 0))
+
+    def test_parent_dependencies_rejected_frees_quota_for_other_jobs(self):
+        # Parent rejected -> its dependents don't consume resources, leaving
+        # quota available for other admittable jobs in the same project.
+        now = datetime.now()
+        project_jobs = {
+            "p": [
+                # First in priority order: parent that doesn't fit (over project quota).
+                (
+                    "parent",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 100},
+                    ),
+                ),
+                (
+                    "parent--exp-default-1",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+                # Lower priority (later creation_time): a normal job that
+                # would have lost in pass 1 if the orphan slot consumed quota.
+                (
+                    "other",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now + timedelta(seconds=1),
+                        resources={"v4": 4},
+                    ),
+                ),
+            ],
+        }
+        sched: TierScheduler = TierScheduler.default_config().instantiate()
+        results = sched.schedule(
+            resource_limits=[{"v4": 8}],
+            project_quotas={"p": {"v4": 8}},
+            project_jobs=project_jobs,
+            job_state_metadata={},
+            parent_dependencies={"parent--exp-default-1": "parent"},
+        )
+        self.assertFalse(results.job_verdicts["parent"].should_run())
+        self.assertFalse(results.job_verdicts["parent--exp-default-1"].should_run())
+        # `other` admits using the quota the orphan slot did not claim.
+        self.assertTrue(results.job_verdicts["other"].should_run())
+        self.assertEqual({"v4": 4}, results.project_usages["p"])
+
+    def test_parent_dependencies_missing_parent_raises(self):
+        # If the project queue is sorted such that a dependent is processed
+        # before its parent (a contract violation in ProjectJobSorter /
+        # _demote_unschedulable_jobs), the scheduler raises RuntimeError
+        # rather than silently rejecting the dependent.
+        now = datetime.now()
+        project_jobs = {
+            "p": [
+                # Dependent listed BEFORE parent — violates the ordering
+                # contract that parents must be visited first.
+                (
+                    "parent--exp-default-1",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+                (
+                    "parent",
+                    JobMetadata(
+                        user_id="u",
+                        project_id="p",
+                        creation_time=now,
+                        resources={"v4": 4},
+                    ),
+                ),
+            ],
+        }
+        sched: TierScheduler = TierScheduler.default_config().instantiate()
+        with self.assertRaisesRegex(RuntimeError, "parent has not been scheduled"):
+            sched.schedule(
+                resource_limits=[{"v4": 12}],
+                project_quotas={"p": {"v4": 12}},
+                project_jobs=project_jobs,
+                job_state_metadata={},
+                parent_dependencies={"parent--exp-default-1": "parent"},
+            )
+
 
 def _mock_get_resource_limits(*args):
     del args

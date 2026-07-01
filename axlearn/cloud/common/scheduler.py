@@ -164,14 +164,18 @@ class JobVerdict:
     Attributes:
         over_limits: If the job cannot be scheduled, the set of resource types on which the job's
             demands exceed the project limits.
+        unmet_dependencies: If the job cannot be scheduled because a dependency (e.g. its
+            scheduler-tracked parent for an expansion slot) was not admitted, the set of
+            unmet dependency job ids.
         metadata: Metadata for each verdict. Defaults to an empty dict.
     """
 
     over_limits: Optional[set[ResourceType]] = None
+    unmet_dependencies: Optional[set[str]] = None
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def should_run(self):
-        return not self.over_limits
+        return not self.over_limits and not self.unmet_dependencies
 
     def __bool__(self):
         return self.should_run()
@@ -267,9 +271,16 @@ def _compute_total_limits(resource_limits: Sequence[ResourceMap[int]]) -> Resour
     return total_limits
 
 
-def _demote_unschedulable_jobs(jobs: JobQueue, *, limits: ResourceMap[int]) -> JobQueue:
+def _demote_unschedulable_jobs(
+    jobs: JobQueue,
+    *,
+    limits: ResourceMap[int],
+    parent_dependencies: Optional[Mapping[str, str]] = None,
+) -> JobQueue:
     schedulable = []
     unschedulable = []
+    unschedulable_names: set[str] = set()
+    parent_dependencies = parent_dependencies or {}
     for job_name, job_metadata in jobs:
         resources = job_metadata.resources
         is_schedulable = True
@@ -277,13 +288,55 @@ def _demote_unschedulable_jobs(jobs: JobQueue, *, limits: ResourceMap[int]) -> J
             if demand > limits.get(resource_type, 0):
                 is_schedulable = False
                 break
+        # Also demote if a known dependency was already demoted, so the
+        # pair stays together. Relies on `jobs` being in dependency-respecting
+        # order (parents before their dependents), which the ProjectJobSorter
+        # output satisfies for expansion slots.
+        if parent_dependencies.get(job_name) in unschedulable_names:
+            is_schedulable = False
         if is_schedulable:
             schedulable.append((job_name, job_metadata))
         else:
+            unschedulable_names.add(job_name)
             logging.info("Unschedulable job: %s: %s", job_name, job_metadata)
             unschedulable.append((job_name, job_metadata))
     # Put unscheduable jobs after the schedable ones.
     return schedulable + unschedulable
+
+
+def _check_parent_dependency(
+    job_id: str,
+    *,
+    parent_dependencies: Optional[Mapping[str, str]],
+    job_verdicts: Mapping[str, "JobVerdict"],
+) -> Optional["JobVerdict"]:
+    """Returns a non-admitting verdict if this job depends on an unadmitted parent.
+
+    Used by the parent-admission gate in the inner-scheduler loop: a job
+    listed in `parent_dependencies` is rejected without consuming
+    resources when its parent has been processed-and-rejected. A missing
+    parent verdict indicates that the sort order placed the dependent
+    before its parent — a contract violation in `ProjectJobSorter` /
+    `_demote_unschedulable_jobs` — and raises a `RuntimeError`.
+
+    Returns None when the job has no parent dependency or its parent is
+    admitted; the caller should then proceed with the normal admission
+    flow.
+    """
+    if not parent_dependencies or job_id not in parent_dependencies:
+        return None
+    parent_id = parent_dependencies[job_id]
+    parent_verdict = job_verdicts.get(parent_id)
+    if parent_verdict is None:
+        raise RuntimeError(
+            f"Job {job_id} depends on {parent_id} but the parent has not "
+            f"been scheduled yet. Parents must always be scheduled before "
+            f"their dependents — check ProjectJobSorter / "
+            f"_demote_unschedulable_jobs ordering."
+        )
+    if not parent_verdict.should_run():
+        return JobVerdict(unmet_dependencies={parent_id})
+    return None
 
 
 class BaseVerdictProvider(Configurable):
@@ -420,6 +473,7 @@ class TierScheduler(BaseScheduler):
         project_quotas: ProjectResourceMap,
         project_jobs: ProjectJobs,
         job_state_metadata: dict[str, JobStateMetadata],
+        parent_dependencies: Optional[Mapping[str, str]] = None,
         verbosity: int = 0,
     ) -> BaseScheduler.ScheduleResults:
         """See `BaseScheduler.schedule` for details."""
@@ -440,7 +494,11 @@ class TierScheduler(BaseScheduler):
         # Maps project_id -> deque of (job_id, job_metadata).
         project_job_queues: dict[str, collections.deque[tuple[str, JobMetadata]]] = {
             project_id: collections.deque(
-                _demote_unschedulable_jobs(sorted_jobs, limits=remaining_limits)
+                _demote_unschedulable_jobs(
+                    sorted_jobs,
+                    limits=remaining_limits,
+                    parent_dependencies=parent_dependencies,
+                )
             )
             for project_id, sorted_jobs in project_jobs.items()
         }
@@ -491,6 +549,19 @@ class TierScheduler(BaseScheduler):
         while not project_queue.empty():
             project_usage_ratio, _, project_id = project_queue.get()
             job_id, job_metadata = project_job_queues[project_id].popleft()
+
+            # Reject without consuming resources when this job depends on a
+            # parent that wasn't admitted in this cycle.
+            gate_verdict = _check_parent_dependency(
+                job_id,
+                parent_dependencies=parent_dependencies,
+                job_verdicts=job_verdicts,
+            )
+            if gate_verdict is not None:
+                job_verdicts[job_id] = gate_verdict
+                if project_job_queues[project_id]:
+                    project_queue.put(project_queue_item(project_id))
+                continue
 
             # Admit the highest priority job within the project.
             verdict = self._verdict_provider.get_verdict(
@@ -645,8 +716,16 @@ class ReportingScheduler(BaseScheduler):
         """
         schedule_results = self._inner.schedule(**kwargs)
 
-        # Handle reports.
-        self._reporter(schedule_results=schedule_results, **kwargs)
+        # Pass each reporter argument explicitly so the reporter contract
+        # stays fixed even as the inner-scheduler signature evolves.
+        self._reporter(
+            schedule_results=schedule_results,
+            resource_limits=kwargs["resource_limits"],
+            project_quotas=kwargs["project_quotas"],
+            project_jobs=kwargs["project_jobs"],
+            job_state_metadata=kwargs["job_state_metadata"],
+            verbosity=kwargs.get("verbosity", 0),
+        )
         return schedule_results
 
 
@@ -728,11 +807,16 @@ class JobScheduler(Configurable):
         resource_limits = quota_info.total_resources
         project_quotas = quota_info.project_resources
 
+        # Express each expansion slot's parent so the inner scheduler can
+        # reject orphan slots without consuming project quota.
+        parent_dependencies = {name: info.parent_job for name, info in slot_info.items()}
+
         schedule_results = self._scheduler.schedule(
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs=project_jobs,
             job_state_metadata=job_state_metadata,
+            parent_dependencies=parent_dependencies,
             verbosity=verbosity,
         )
 
