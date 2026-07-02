@@ -248,6 +248,94 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
             self.assertEqual(1, mock_delete_node_pools.call_count)
 
     @parameterized.parameters(
+        # Scale-up only: target == max, nothing to delete.
+        dict(target_replicas=3, max_replicas=3),
+        # Scale-down only: target == 0, all pools deleted.
+        dict(target_replicas=0, max_replicas=4),
+        # Mixed: create [0..2), delete [2..4).
+        dict(target_replicas=2, max_replicas=4),
+        # Already at target: target == max, idempotent.
+        dict(target_replicas=1, max_replicas=1),
+    )
+    def test_create_pools_to_and_delete_pools_above(self, target_replicas: int, max_replicas: int):
+        mock_create_node_pools = mock.Mock()
+        mock_delete_node_pools = mock.Mock()
+        mock_construct_node_pool_name = mock.Mock()
+
+        mock_utils = mock.patch.multiple(
+            node_pool_provisioner.__name__,
+            create_node_pools=mock_create_node_pools,
+            delete_node_pools=mock_delete_node_pools,
+            construct_node_pool_name=mock_construct_node_pool_name,
+        )
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs(num_replicas=max_replicas)
+        with mock_utils:
+            tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
+            provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
+
+            # Simulate the runner's scale-in-place sequence:
+            #   create_pools_to(target) → patch LWS → delete_pools_above(target, max).
+            provisioner.create_pools_to(tpu_gke_job, target_replicas)
+            provisioner.delete_pools_above(tpu_gke_job, target_replicas, max_replicas)
+
+            # construct_node_pool_name is called once per pool in the union
+            # of create range [0..target) and delete range [target..max).
+            self.assertEqual(max_replicas, mock_construct_node_pool_name.call_count)
+
+            if target_replicas > 0:
+                self.assertEqual(1, mock_create_node_pools.call_count)
+                created_names = mock_create_node_pools.call_args.args[0]
+                self.assertEqual(target_replicas, len(created_names))
+                additional_labels_list = mock_create_node_pools.call_args.kwargs[
+                    "additional_labels_list"
+                ]
+                self.assertEqual(target_replicas, len(additional_labels_list))
+            else:
+                mock_create_node_pools.assert_not_called()
+
+            if target_replicas < max_replicas:
+                self.assertEqual(1, mock_delete_node_pools.call_count)
+                deleted_names = mock_delete_node_pools.call_args.args[0]
+                self.assertEqual(max_replicas - target_replicas, len(deleted_names))
+            else:
+                mock_delete_node_pools.assert_not_called()
+
+    def test_create_pools_to_preserves_labels(self):
+        """create_pools_to passes the same per-pool labels as create_for."""
+        mock_create_node_pools = mock.Mock()
+        mock_delete_node_pools = mock.Mock()
+
+        mock_utils = mock.patch.multiple(
+            node_pool_provisioner.__name__,
+            create_node_pools=mock_create_node_pools,
+            delete_node_pools=mock_delete_node_pools,
+            construct_node_pool_name=mock.Mock(),
+        )
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs(
+            num_replicas=2, enable_tpu_smart_repair=True
+        )
+        env = {
+            _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: self._create_serialized_job_spec(job_priority=5)
+        }
+        provisioner_cfg.labels = {"custom-key": "custom-val"}
+        with mock_utils, mock.patch.dict("os.environ", env):
+            tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
+            provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
+
+            provisioner.create_pools_to(tpu_gke_job, target_replicas=2)
+
+            additional_labels_list = mock_create_node_pools.call_args.kwargs[
+                "additional_labels_list"
+            ]
+            self.assertEqual(2, len(additional_labels_list))
+            for additional_labels in additional_labels_list:
+                self.assertEqual("custom-val", additional_labels.get("custom-key"))
+                self.assertEqual("5", additional_labels.get("job-priority"))
+                self.assertEqual(
+                    "true", additional_labels.get("cloud.google.com/gke-tpu-auto-restart")
+                )
+
+    @parameterized.parameters(
         dict(
             disk_type="pd-balanced",
             boot_disk_kms_key="projects/p/locations/l/keyRings/kr/cryptoKeys/k",

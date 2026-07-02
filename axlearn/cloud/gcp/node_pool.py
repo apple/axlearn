@@ -329,7 +329,7 @@ def delete_node_pools(
     cluster: str,
     retry_interval: int = 30,
     wait_timeout: int = 0,
-):
+) -> int:
     """Delete node pools.
 
     See also:
@@ -343,6 +343,11 @@ def delete_node_pools(
         retry_interval: Time in seconds between retries.
         wait_timeout: Seconds to wait for node pools to delete.
             This function doesn't wait if wait_timeout <= 0.
+
+    Returns:
+        Number of node pools still existing in `names` at the end of the call
+        (i.e. pools whose status is not NOT_EXIST). When `wait_timeout > 0`
+        and the call returns normally, this is always 0.
 
     Raises:
         NodePoolDeletionError: If node pools are not deleted
@@ -382,14 +387,14 @@ def delete_node_pools(
             logging.info(
                 "All %s node pools deletion took %s seconds", num_node_pools_deleted, elapsed_time
             )
-            break
+            return 0
 
         if wait_timeout <= 0:
             logging.info(
                 "Skip waiting for node pool deletion since wait_timeout (%s) is non-positive",
                 wait_timeout,
             )
-            break
+            return len(names) - num_node_pools_deleted
 
         elif elapsed_time > wait_timeout:
             raise NodePoolDeletionError(
@@ -511,7 +516,7 @@ def create_node_pools(
     enable_confidential_storage: Optional[bool] = None,
     retry_interval: int = 30,
     wait_timeout: int = 0,
-):
+) -> int:
     """Create node pools.
 
     See also:
@@ -540,6 +545,11 @@ def create_node_pools(
         retry_interval: Time in seconds between retries.
         wait_timeout: Seconds to wait for node pools to delete.
             This function doesn't wait if wait_timeout <= 0.
+
+    Returns:
+        Number of node pools in `names` whose status is RUNNING at the end of
+        the call. When `wait_timeout > 0` and the call returns normally, this
+        is always `len(names)`.
 
     Raises:
         NodePoolCreationError: If node pools are not deleted
@@ -597,14 +607,14 @@ def create_node_pools(
                 pre_provisioner_id,
                 elapsed_time,
             )
-            break
+            return num_node_pools_running
 
         if wait_timeout <= 0:
             logging.info(
                 "Skip waiting for node pool creation since wait_timeout (%s) is non-positive",
                 wait_timeout,
             )
-            break
+            return num_node_pools_running
 
         elif elapsed_time > wait_timeout:
             raise NodePoolCreationError(
