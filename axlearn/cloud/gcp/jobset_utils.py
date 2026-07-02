@@ -430,8 +430,10 @@ class SingleReplicatedJob(BaseReplicatedJob):
         tpu_type = infer_tpu_type(accelerator.instance_type)
         cores = infer_tpu_cores(tpu_type)
         topology = accelerator.topology
-        if not tpu_type.startswith("v5p") or cores < 128:
-            raise ValueError("custom topology is only available for v5p-128 and above.")
+        if not tpu_type.startswith(("v5p", "7x")) or cores < 128:
+            raise ValueError(
+                "custom topology is only available for v5p and 7x with at least 128 cores."
+            )
         if not re.fullmatch(r"\d+x\d+x\d+", topology):
             raise ValueError("custom topology only supports 3d topology for v5p.")
         dims = [int(dim.strip()) for dim in topology.split("x")]

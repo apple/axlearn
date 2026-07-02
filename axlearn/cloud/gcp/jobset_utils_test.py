@@ -571,7 +571,9 @@ class TPUReplicatedJobTest(TestCase):
         dict(
             instance_type="v5p-16",
             topology="2x2x2",
-            expected=ValueError("custom topology is only available for v5p-128 and above."),
+            expected=ValueError(
+                "custom topology is only available for v5p and 7x with at least 128 cores."
+            ),
         ),
         dict(
             instance_type="v5p-128",
@@ -591,6 +593,18 @@ class TPUReplicatedJobTest(TestCase):
             ),
         ),
         dict(instance_type="v5p-128", topology="2x4x8", expected=None),
+        # v7x reuses the same validation (2 cores/chip, 3d): custom shape for a
+        # 512-core / 256-chip slice.
+        dict(instance_type="tpu-7x-512", topology="4x4x16", expected=None),
+        dict(instance_type="tpu-7x-512", topology="4x8x8", expected=None),
+        dict(
+            instance_type="tpu-7x-512",
+            topology="4x4x8",
+            expected=ValueError(
+                "custom topology 4x4x8 doesn't match the number of cores in "
+                "instance_type tpu-7x-512."
+            ),
+        ),
     )
     def test_verify_custom_topology_availability(self, instance_type, topology, expected):
         accelerator = AcceleratorConfig().set(instance_type=instance_type, topology=topology)
