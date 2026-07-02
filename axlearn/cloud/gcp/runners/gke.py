@@ -1457,7 +1457,16 @@ class LWSRunnerJob(GKEBaseRunnerJob):
                         state=JobLifecycleState.RUNNING,
                     )
                     last_job_status = status
+                self._on_running_tick()
             time.sleep(cfg.status_interval_seconds)
+
+    def _on_running_tick(self):
+        """Per-iteration hook for subclasses to act while the LWS is running.
+
+        Called from the RUNNING/PROGRESSING branch of the status loop on every
+        tick. Subclasses override this to reconcile workload state against an
+        external target. The default implementation is a no-op.
+        """
 
     def _maybe_publish(self, job_name: str, *, msg: str, state: JobLifecycleState):
         # Publish events to event queue.
