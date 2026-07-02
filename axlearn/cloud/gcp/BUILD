@@ -169,6 +169,18 @@ py_library(
 )
 
 py_library(
+    name = "k8s_hpa",
+    srcs = ["k8s_hpa.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//axlearn/cloud/common:utils",
+        "//axlearn/common:config",
+        "@axlearn_pip//absl_py",
+        "@axlearn_pip//kubernetes",
+    ],
+)
+
+py_library(
     name = "k8s_http_route",
     srcs = ["k8s_http_route.py"],
     visibility = ["//visibility:public"],
@@ -177,6 +189,18 @@ py_library(
         "//axlearn/cloud/common:utils",
         "//axlearn/common:config",
         "//axlearn/common:utils",
+        "@axlearn_pip//absl_py",
+        "@axlearn_pip//kubernetes",
+    ],
+)
+
+py_library(
+    name = "k8s_metrics_collection",
+    srcs = ["k8s_metrics_collection.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//axlearn/cloud/common:utils",
+        "//axlearn/common:config",
         "@axlearn_pip//absl_py",
         "@axlearn_pip//kubernetes",
     ],
@@ -662,6 +686,24 @@ py_test(
         ":k8s_http_route",
         "//axlearn/cloud/common:utils",
         "//axlearn/common:test_utils",
+        "@axlearn_pip//absl_py",
+    ],
+)
+
+py_test(
+    name = "k8s_hpa_test",
+    srcs = ["k8s_hpa_test.py"],
+    deps = [
+        ":k8s_hpa",
+        "@axlearn_pip//absl_py",
+    ],
+)
+
+py_test(
+    name = "k8s_metrics_collection_test",
+    srcs = ["k8s_metrics_collection_test.py"],
+    deps = [
+        ":k8s_metrics_collection",
         "@axlearn_pip//absl_py",
     ],
 )

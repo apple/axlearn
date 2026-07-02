@@ -85,6 +85,8 @@ from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
+from axlearn.cloud.gcp.k8s_hpa import HPA
+from axlearn.cloud.gcp.k8s_metrics_collection import MetricsCollection, PodMonitoring
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
     delete_node_pools,
@@ -1047,6 +1049,16 @@ class LWSRunnerJob(GKEBaseRunnerJob):
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
         tags: Optional[list[str]] = None
+        # Optional HorizontalPodAutoscaler. When set, the runner creates an
+        # HPA after the LWS comes online and sets ownerReference to the LWS
+        # so the HPA is garbage-collected on LWS deletion. The caller must
+        # populate `scale_target_*` (typically pointing at the LWS itself or
+        # a custom CRD with a `scale` subresource).
+        hpa: Optional[HPA.Config] = None
+        # Optional metrics-collection resource (e.g. GMP PodMonitoring) so
+        # the cluster's metrics backend can scrape pod metrics that drive
+        # the HPA. ownerReference to the LWS handles cleanup.
+        metrics_collection: Optional[MetricsCollection.Config] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
@@ -1065,6 +1077,41 @@ class LWSRunnerJob(GKEBaseRunnerJob):
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
         flags.DEFINE_multi_string("tags", None, "Job specific tags.", **common_kwargs)
+
+        # Register HPA / MetricsCollection flags up-front. The walker only
+        # descends into `cfg.hpa` / `cfg.metrics_collection` when they're
+        # populated — but those configs are staged later in `from_flags`
+        # (based on whether the user provided `--scaling_*` flags), so the
+        # walker would miss them at flag-registration time. Delegating
+        # here keeps each Configurable as the source of truth for its own
+        # flags while still registering them once.
+        HPA.define_flags(fv)
+        PodMonitoring.define_flags(fv)
+
+        # Downstream subclasses may read this to narrow the scale
+        # subresource's `status.selector` to leader-only pods; left here
+        # (rather than on `HPA`) because HPA itself doesn't filter pods —
+        # the scale subresource does.
+        flags.DEFINE_boolean(
+            "scaling_metric_leader_only",
+            True,
+            "When True (default), the scale subresource's pod selector "
+            "matches only LWS leader pods (worker-index=0). HPA computes "
+            "per-pod metric averages over leaders only — appropriate when "
+            "the autoscaling metric is emitted by leaders (e.g. pathways "
+            "head). Set to False when the metric is emitted by all pods "
+            "in the LWS group (or if you want HPA to consider workers in "
+            "its missing-metrics safety calculations).",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "scaling_metric_worker_only",
+            False,
+            "When True, the scale subresource's pod selector matches only "
+            "LWS worker pods (worker-index!=0). Mutually exclusive with "
+            "--scaling_metric_leader_only.",
+            **common_kwargs,
+        )
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
@@ -1305,7 +1352,64 @@ class LWSRunnerJob(GKEBaseRunnerJob):
             _pre_provision(cfg, self._pre_provisioner, self._inner)
 
         self._inner.execute()
+        self._create_lws_owned_resources()
         self._on_job_submitted()
+
+    def _create_lws_owned_resources(self):
+        """Create HPA and metrics-collection resources owned by the LWS.
+
+        Each child resource gets an ownerReference to the LWS so the
+        Kubernetes garbage collector cascades deletion when the LWS is
+        removed (no separate cleaners required).
+        """
+        cfg: LWSRunnerJob.Config = self.config
+        if cfg.hpa is None and cfg.metrics_collection is None:
+            return
+        owner = self._get_lws_owner_reference()
+        if cfg.hpa is not None:
+            cfg.hpa.instantiate().execute(owner=owner)
+        if cfg.metrics_collection is not None:
+            cfg.metrics_collection.instantiate().execute(owner=owner)
+
+    def _get_lws_owner_reference(self) -> dict:
+        """Fetch the LWS we just created and return an ownerReference dict.
+
+        Raises:
+            RuntimeError: If the LWS cannot be fetched, or if the fetched
+                LWS has no `metadata.uid`. Both indicate a contract
+                violation: the runner just created the LWS, so it must
+                be reachable and uid-stamped before we can attach HPA /
+                metrics-collection resources to it.
+        """
+        cfg: LWSRunnerJob.Config = self.config
+        api = k8s.client.CustomObjectsApi()
+        try:
+            lws = api.get_namespaced_custom_object(
+                group="leaderworkerset.x-k8s.io",
+                version="v1",
+                namespace=cfg.namespace,
+                plural="leaderworkersets",
+                name=cfg.name,
+            )
+        except k8s.client.ApiException as e:
+            raise RuntimeError(
+                f"Failed to fetch LWS {cfg.namespace}/{cfg.name} for "
+                f"ownerReference; cannot attach HPA / metrics-collection "
+                f"resources without it: {e}"
+            ) from e
+        uid = lws.get("metadata", {}).get("uid")
+        if not uid:
+            raise RuntimeError(
+                f"LWS {cfg.namespace}/{cfg.name} has no metadata.uid; cannot build ownerReference."
+            )
+        return {
+            "apiVersion": "leaderworkerset.x-k8s.io/v1",
+            "kind": "LeaderWorkerSet",
+            "name": cfg.name,
+            "uid": uid,
+            "controller": False,
+            "blockOwnerDeletion": False,
+        }
 
     def _execute(self):
         cfg: LWSRunnerJob.Config = self.config

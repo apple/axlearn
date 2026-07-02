@@ -47,6 +47,8 @@ py_library(
         "//axlearn/cloud/gcp:job",
         "//axlearn/cloud/gcp:job_flink",
         "//axlearn/cloud/gcp:jobset_utils",
+        "//axlearn/cloud/gcp:k8s_hpa",
+        "//axlearn/cloud/gcp:k8s_metrics_collection",
         "//axlearn/cloud/gcp:node_pool",
         "//axlearn/cloud/gcp:node_pool_provisioner",
         "//axlearn/cloud/gcp:utils",
