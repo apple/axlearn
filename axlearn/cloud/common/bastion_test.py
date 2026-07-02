@@ -23,7 +23,6 @@ from absl.testing import absltest, parameterized
 from axlearn.cloud.common import bastion
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
-    _JOB_DIR,
     _LOG_DIR,
     _ORPHAN_MISSING_COUNT_THRESHOLD,
     Bastion,
@@ -1068,10 +1067,23 @@ class BastionTest(parameterized.TestCase):
         def noop_upload_fn(*args, **kwargs):
             del args, kwargs
 
-        with contextlib.ExitStack() as stack, tempfile.TemporaryDirectory() as tmpdir:
+        with (
+            contextlib.ExitStack() as stack,
+            tempfile.TemporaryDirectory() as tmpdir,
+            tempfile.TemporaryDirectory() as job_dir,
+        ):
             # Boilerplate to register multiple mocks at once.
             for m in mocks:
                 stack.enter_context(m)
+            # Route bastion's local jobspec cache into a tempdir so tests work
+            # in sandboxed filesystems where `/var/tmp` is read-only.
+            stack.enter_context(mock.patch.object(bastion, "_JOB_DIR", job_dir))
+            stack.enter_context(
+                mock.patch.dict(
+                    bastion.download_job_batch.__kwdefaults__,
+                    {"local_spec_dir": job_dir},
+                )
+            )
 
             cfg = Bastion.default_config().set(
                 scheduler=JobScheduler.default_config(),
@@ -1148,7 +1160,6 @@ class BastionTest(parameterized.TestCase):
 
         with self._patch_bastion(validator_cfg=mock_validator_cfg) as mock_bastion:
             os.makedirs(mock_bastion._active_dir, exist_ok=True)
-            os.makedirs(_JOB_DIR, exist_ok=True)
             # Create some jobspecs to download.
             specs = [
                 new_jobspec(
@@ -1766,7 +1777,7 @@ class BastionTest(parameterized.TestCase):
                     # Remote jobspec should not be deleted until gc.
                     for delete_call in mock_tfio["remove"].mock_calls:
                         self.assertNotIn(
-                            os.path.join(_JOB_DIR, job.spec.name),
+                            os.path.join(bastion._JOB_DIR, job.spec.name),
                             delete_call.args,
                         )
 
@@ -2364,7 +2375,6 @@ class BastionTest(parameterized.TestCase):
             mock.patch.object(mock_bastion, "_append_to_job_history", mock_append_to_job_history),
         ):
             os.makedirs(mock_bastion._active_dir, exist_ok=True)
-            os.makedirs(_JOB_DIR, exist_ok=True)
             # Create some jobspecs to download.
             specs = [
                 new_jobspec(
@@ -2475,7 +2485,6 @@ class BastionTest(parameterized.TestCase):
             mock.patch.object(mock_bastion, "_append_to_job_history", mock_append_to_job_history),
         ):
             os.makedirs(mock_bastion._active_dir, exist_ok=True)
-            os.makedirs(_JOB_DIR, exist_ok=True)
             # Create some jobspecs to download.
             specs = [
                 new_jobspec(
