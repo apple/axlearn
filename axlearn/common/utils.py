@@ -634,17 +634,124 @@ def as_numpy_array(x: Any):
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
-def with_sharding_constraint(x: Tensor, shardings):
+def with_sharding_constraint(
+    x: NestedTensor, partition_spec: Optional[PartitionSpec]
+) -> NestedTensor:
+    """Strict sharding constraint. Manual mesh axes in `partition_spec` are an error.
+
+    Use for parameters and state, where a wrong axis is a real bug. For forward-path
+    activation hints, use `maybe_shard`.
+    """
+    if partition_spec is None:
+        return x
     mesh = thread_resources.env.physical_mesh
     if mesh.empty or mesh.size == 1:
         return x
-    return jax.lax.with_sharding_constraint(x, shardings)
+    return jax.lax.with_sharding_constraint(x, partition_spec)
 
 
-def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
+def maybe_shard(
+    x: NestedTensor,
+    partition_spec: Optional[PartitionSpec | PartitionSpecType],
+) -> NestedTensor:
+    """Best-effort activation sharding hint: shards `x` by `partition_spec` if non-None.
+
+    Manual axes (from an enclosing `shard_map`) in `partition_spec` are downgraded to
+    `PartitionSpec.UNCONSTRAINED`; still-Auto axes apply as usual. Activation sharding is a
+    hint XLA can override anyway, so silently dropping the Manual portion is safe. For
+    parameters / state where a wrong axis is a real bug, use `with_sharding_constraint`.
+    For `shard_map` `in_specs`/`out_specs` (which reject `UNCONSTRAINED`), use
+    `manual_axes_to_none`.
+
+    When all mesh axes are Manual (no Auto axes remain), `with_sharding_constraint` is
+    skipped entirely — there's nothing left for the compiler to constrain, and the call
+    would be a no-op wrapper at best (see `_manual_axes_to_unconstrained`).
+
+    `partition_spec` may be a `PartitionSpec` or a flat sequence of axis entries (wrapped
+    into a `PartitionSpec`). For pytree-structured specs (e.g. `CompositeAttentionBias`),
+    use `jax.tree.map(maybe_shard, x, spec_tree)` at the call site.
+    """
     if partition_spec is None:
         return x
-    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
+    mesh = thread_resources.env.physical_mesh
+    if mesh.empty or mesh.size == 1:
+        return x
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if not abstract_mesh.empty and not abstract_mesh.auto_axes:
+        # All mesh axes are Manual — no Auto dim for the compiler to work with.
+        return x
+    if not isinstance(partition_spec, PartitionSpec):
+        partition_spec = PartitionSpec(*partition_spec)
+    return jax.lax.with_sharding_constraint(x, _manual_axes_to_unconstrained(partition_spec))
+
+
+def manual_axes_to_none(spec: PartitionSpec) -> PartitionSpec:
+    """Replaces Manual mesh axes in `spec` with `None` (replicate the dim).
+
+    For `PartitionSpec`s passed to `shard_map`'s `in_specs`/`out_specs`, which reject
+    `UNCONSTRAINED`. Outside `shard_map`, returns `spec` unchanged. Companion to
+    `_manual_axes_to_unconstrained`, which uses `UNCONSTRAINED` instead.
+    """
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if abstract_mesh.empty:
+        return spec
+    auto_axes = set(abstract_mesh.auto_axes)
+
+    def _drop_from_dim(dim):
+        if dim is None or dim is PartitionSpec.UNCONSTRAINED:
+            return dim
+        if isinstance(dim, str):
+            return dim if dim in auto_axes else None
+        kept = tuple(a for a in dim if a in auto_axes)
+        if not kept:
+            return None
+        return kept[0] if len(kept) == 1 else kept
+
+    return PartitionSpec(*(_drop_from_dim(d) for d in spec))
+
+
+def _manual_axes_to_unconstrained(spec: PartitionSpec) -> PartitionSpec:
+    """Like `manual_axes_to_none`, but Manual axes become `UNCONSTRAINED` instead of `None`.
+
+    Used by `maybe_shard` — activation hints route through `jax.lax.with_sharding_constraint`,
+    which rejects Manual axes but lets the compiler choose for `UNCONSTRAINED` dims. Outside
+    `shard_map`, returns `spec` unchanged (explicit `None`s are not silently promoted).
+
+    Why `UNCONSTRAINED` and not `None` on a Manual dim: `None` enters GSPMD's sharding-
+    propagation graph as an explicit "replicate this dim" constraint, overriding whatever
+    an outer layer (another `with_sharding_constraint`, an outer `shard_map`, a `scan` /
+    `vmap` carry, etc.) had established for that dim. `UNCONSTRAINED` states "I have no
+    opinion on this dim," preserving outer sharding decisions. Some JAX versions also
+    raise `ValueError: spec can only refer to Auto axes of the mesh` for `None` on a
+    Manual dim (see PR #2404).
+
+    Caller (`maybe_shard`) already skips the constraint when no Auto axis remains, so this
+    helper asserts on that precondition — an all-Manual mesh would leave no dim for
+    `UNCONSTRAINED` to attach to.
+    """
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if abstract_mesh.empty or not abstract_mesh.manual_axes:
+        return spec
+    assert abstract_mesh.auto_axes, (
+        "_manual_axes_to_unconstrained requires at least one Auto axis; "
+        "callers must skip the constraint when the mesh is all-Manual."
+    )
+    manual_axes = set(abstract_mesh.manual_axes)
+
+    def _promote(orig, filtered):
+        # `orig` is the user's dim; `filtered` is `manual_axes_to_none`'s result. A `None`
+        # in `filtered` only becomes UNCONSTRAINED if it came from a Manual axis (or a
+        # tuple of Manual axes) in `orig` — explicit `None` (replicate) must pass through.
+        if filtered is not None:
+            return filtered
+        if isinstance(orig, str):
+            return PartitionSpec.UNCONSTRAINED if orig in manual_axes else None
+        if isinstance(orig, tuple):
+            return PartitionSpec.UNCONSTRAINED if all(a in manual_axes for a in orig) else None
+        return None
+
+    filtered = manual_axes_to_none(spec)
+    return PartitionSpec(*(_promote(o, f) for o, f in zip(spec, filtered)))
 
 
 def get_current_abstract_or_physical_mesh() -> jax.sharding.AbstractMesh | jax.sharding.Mesh:
@@ -789,7 +896,7 @@ def dispatch_input_batch(
 
     # Constrain the input batch.
     input_batch = jax.tree.map(
-        lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch
+        lambda x: maybe_shard(x, PartitionSpec(batch_axis_names)), input_batch
     )
 
     def traverse_and_dispatch(data: NestedTensor) -> NestedTensor:

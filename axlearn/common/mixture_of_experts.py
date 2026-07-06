@@ -68,9 +68,10 @@ from axlearn.common.utils import (
     get_current_abstract_or_physical_mesh,
     get_recursively,
     infer_mesh_shape,
+    manual_axes_to_none,
+    maybe_shard,
     set_recursively,
     tree_paths,
-    with_sharding_constraint,
 )
 
 
@@ -462,7 +463,7 @@ class Top2Gating(BaseGating):
 
     The methods take gating logits, potentially sharded across tpu cores as inputs.
     We rely on sharding propagation to work universally. Dispatch and combine tensors
-    should be explicitly annotated with `utils.with_sharding_constraint` by the caller.
+    should be explicitly annotated with `utils.maybe_shard` by the caller.
 
     We perform dispatch/combine via einsum.
 
@@ -695,7 +696,7 @@ class Top2Gating(BaseGating):
         """
         del combine_tensor  # Unused in einsum-based dispatch
         dispatch_tensor = dispatch_tensor.astype(dtype)
-        dispatch_tensor = with_sharding_constraint(dispatch_tensor, partition_spec)
+        dispatch_tensor = maybe_shard(dispatch_tensor, partition_spec)
         return jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, inputs)
 
     @nowrap
@@ -719,7 +720,7 @@ class Top2Gating(BaseGating):
             A tensor with shape [..., G, S, M].
         """
         combine_tensor = combine_tensor.astype(dtype)
-        combine_tensor = with_sharding_constraint(combine_tensor, partition_spec)
+        combine_tensor = maybe_shard(combine_tensor, partition_spec)
         return jnp.einsum("ogecm,ogsec->ogsm", inputs, combine_tensor)
 
 
@@ -1069,7 +1070,7 @@ class TopKGating(BaseGating):
         """
         del combine_tensor  # Unused in einsum-based dispatch
         dispatch_tensor = dispatch_tensor.astype(dtype)
-        dispatch_tensor = with_sharding_constraint(dispatch_tensor, partition_spec)
+        dispatch_tensor = maybe_shard(dispatch_tensor, partition_spec)
         return jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, inputs)
 
     @nowrap
@@ -1093,7 +1094,7 @@ class TopKGating(BaseGating):
             A tensor with shape [..., G, S, M].
         """
         combine_tensor = combine_tensor.astype(dtype)
-        combine_tensor = with_sharding_constraint(combine_tensor, partition_spec)
+        combine_tensor = maybe_shard(combine_tensor, partition_spec)
         return jnp.einsum("ogecm,ogsec->ogsm", inputs, combine_tensor)
 
 
@@ -1703,7 +1704,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         group_len = num_tokens // num_groups
         logging.info("Setting the effective group_size=%r", group_len)
         x = x.reshape([outer_batch, num_groups, group_len, cfg.input_dim])
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
+        x = maybe_shard(x, cfg.dim_to_mesh_axis_map["ogsm"])
         logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
         # Perform gating based on logits. Casting to float32 precision is usually needed for
         # stable performance.
@@ -1744,7 +1745,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             partition_spec=dispatch_partition_spec,
             combine_tensor=combine_tensor_for_dispatch,
         )
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
+        x = maybe_shard(x, cfg.dim_to_mesh_axis_map["oegcm"])
         x = self._wi_activation(x, dispatch_tensor)
         if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             x = self.dropout1(x)
@@ -1752,13 +1753,13 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             x = self.einsum_maybe_quantized(
                 "oegch,ehm->oegcm", activation=x, kernel=self.parameters["wo_weight"]
             )
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
+        x = maybe_shard(x, cfg.dim_to_mesh_axis_map["oegcm"])
 
         # Transpose from oegcm to ogecm format for combine operation.
         # TopKGating and Top2Gating both expect inputs in ogecm format.
         if cfg.gating.klass in [TopKGating, Top2Gating]:
             x = jnp.einsum("oegcm->ogecm", x)
-            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
+            x = maybe_shard(x, cfg.dim_to_mesh_axis_map["ogecm"])
 
         # Support dynamic partition spec lookup for combine operation.
         if hasattr(cfg.gating.klass, "combine_tensor_shape"):
@@ -1774,7 +1775,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             dtype=input_dtype,
             partition_spec=combine_partition_spec,
         )
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
+        x = maybe_shard(x, cfg.dim_to_mesh_axis_map["ogsm"])
 
         # Add RMS norm summary for linear2 outputs.
         self.add_summary("rms_norm/linear2_outputs", (x**2.0).mean().astype(jnp.float32) ** 0.5)
@@ -1825,7 +1826,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                         "expert_dead_neurons",
                         num_dead_units,
                     )
-                x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
+                x_i = maybe_shard(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
@@ -1835,7 +1836,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                 x = self.einsum_maybe_quantized(
                     "oegcm,emh->oegch", activation=x, kernel=self.parameters["wi_weight"]
                 )
-            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegch"])
+            x = maybe_shard(x, cfg.dim_to_mesh_axis_map["oegch"])
             return get_activation_fn(cfg.activation)(x)
 
 
@@ -1876,9 +1877,7 @@ def _convert_feedforward_to_moe_parameters(
         moe_weight_prefix = "wi" if m.group(1) == "1" else "wo"
         moe_weight_suffix = m.group(2)
         # Shard the dispatch tensor by 'expert'.
-        dispatch = with_sharding_constraint(
-            jnp.ones([num_experts], dtype=value.dtype), PartitionSpec("expert")
-        )
+        dispatch = maybe_shard(jnp.ones([num_experts], dtype=value.dtype), PartitionSpec("expert"))
         moe_parameters[f"{moe_weight_prefix}{moe_weight_suffix}_weight"] = jnp.einsum(
             "xy,e->exy", value, dispatch
         )
@@ -2545,7 +2544,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
     def _dispatch_and_combine(self, x: Tensor) -> Tensor:
         """Runs forward pass on the linear layers and dispatching and combining."""
         cfg = self.config
-        x = with_sharding_constraint(x, cfg.input_dim_to_partition_spec["bsm"])
+        x = maybe_shard(x, cfg.input_dim_to_partition_spec["bsm"])
         logits = jnp.einsum("bsm,me->bse", x.astype(jnp.float32), self.parameters["gate_weight"])
         assert logits.dtype == jnp.float32
 
@@ -2554,12 +2553,12 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         gating = self.gating(logits, cfg.seq_load_balance_loss_weight)
         # gate_assignment: [B, S, K] where each value is in [0, E-1], representing which
         # expert to use for a token.
-        gate_assignment = with_sharding_constraint(
+        gate_assignment = maybe_shard(
             gating.gate_assignment,
             cfg.input_dim_to_partition_spec["bsm"],
         )
         # expert_weights: [B, S, K]
-        expert_weights = with_sharding_constraint(
+        expert_weights = maybe_shard(
             gating.expert_weights,
             cfg.input_dim_to_partition_spec["bsm"],
         )
@@ -2592,22 +2591,28 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         assert cfg.dim_to_mesh_axis_map["emh"][-1] == "model"
         assert cfg.dim_to_mesh_axis_map["ehm"][-2] == "model"
 
-        emh_gather_axes = cfg.dim_to_mesh_axis_map["emh"][1]
-        ehm_gather_axes = cfg.dim_to_mesh_axis_map["ehm"][2]
-        bsm_out_spec = cfg.output_dim_to_partition_spec["bsm"]
+        # Drop axes flagged Manual by an enclosing shard_map; those axes can't appear in
+        # this inner shard_map's specs or `all_gather`'s `axis_name`.
+        emh_gather_axes = _drop_manual_axes(cfg.dim_to_mesh_axis_map["emh"][1])
+        ehm_gather_axes = _drop_manual_axes(cfg.dim_to_mesh_axis_map["ehm"][2])
+        bsm_out_spec = manual_axes_to_none(cfg.output_dim_to_partition_spec["bsm"])
         bskm_out_spec = PartitionSpec(*bsm_out_spec[:2], None, bsm_out_spec[2])
 
         mesh = thread_resources.env.physical_mesh
 
+        # `jax.jit` is required because `jax.checkpoint` below is a `closed_call` that
+        # `shard_map` can't evaluate eagerly. Nested under an outer `jit` (production case)
+        # this collapses at trace time and is free.
+        @jax.jit
         @partial(
             jax.shard_map,
             mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(
-                cfg.input_dim_to_partition_spec["bsm"],
-                cfg.input_dim_to_partition_spec["bsm"],
-                cfg.dim_to_mesh_axis_map["emh"],
-                cfg.dim_to_mesh_axis_map["emh"],
-                cfg.dim_to_mesh_axis_map["ehm"],
+                manual_axes_to_none(cfg.input_dim_to_partition_spec["bsm"]),
+                manual_axes_to_none(cfg.input_dim_to_partition_spec["bsm"]),
+                manual_axes_to_none(cfg.dim_to_mesh_axis_map["emh"]),
+                manual_axes_to_none(cfg.dim_to_mesh_axis_map["emh"]),
+                manual_axes_to_none(cfg.dim_to_mesh_axis_map["ehm"]),
             ),
             out_specs=(
                 bskm_out_spec,
@@ -2617,6 +2622,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             # call in the body.
             check_vma=False,
         )
+        @partial(jax.checkpoint, prevent_cse=False)
         def wrapper(
             x: Tensor,
             gate_assignment: Tensor,
@@ -2642,95 +2648,64 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
                 - A tensor of shape [G=B', S', K, M'].
                 - ... optional series of tensors from `_dispatch_hook()[2]`.
             """
-            logging.info("Setting the effective group_size=%r", x.shape[0])
             B, S, M = x.shape  # pylint: disable=invalid-name
+            logging.info("Setting the effective group_size=%r", B)
 
-            @jax.jit
-            @partial(jax.checkpoint, prevent_cse=False)
-            def _gather_and_compute(
-                x: Tensor,
-                gate_assignment: Tensor,
-                wi_0_sharded: Tensor,
-                wi_1_sharded: Tensor,
-                wo_sharded: Tensor,
-            ) -> tuple[Tensor, ...]:
-                # Explicitly all-gather expert weights along fsdp inside the
-                # checkpoint scope. Backward will recompute this gather rather
-                # than saving the gathered tensor.
-                if emh_gather_axes is not None:
-                    wi_0 = jax.lax.all_gather(wi_0_sharded, emh_gather_axes, axis=1, tiled=True)
-                    wi_1 = jax.lax.all_gather(wi_1_sharded, emh_gather_axes, axis=1, tiled=True)
-                else:
-                    wi_0 = wi_0_sharded
-                    wi_1 = wi_1_sharded
-                if ehm_gather_axes is not None:
-                    wo = jax.lax.all_gather(wo_sharded, ehm_gather_axes, axis=2, tiled=True)
-                else:
-                    wo = wo_sharded
+            if emh_gather_axes:
+                wi_0 = jax.lax.all_gather(wi_0_sharded, emh_gather_axes, axis=1, tiled=True)
+                wi_1 = jax.lax.all_gather(wi_1_sharded, emh_gather_axes, axis=1, tiled=True)
+            else:
+                wi_0, wi_1 = wi_0_sharded, wi_1_sharded
+            if ehm_gather_axes:
+                wo = jax.lax.all_gather(wo_sharded, ehm_gather_axes, axis=2, tiled=True)
+            else:
+                wo = wo_sharded
 
-                # [B' x S' x K]
-                gate_assignment = gate_assignment.reshape((-1))
-                # x[sorted_indices[:, i]] for i in range(S * K) represents tokens sorted
-                # by which experts they are assigned to.
-                # [B' x S' x K]
-                sorted_indices = jnp.argsort(gate_assignment)
-                token_indices = sorted_indices // num_experts_per_token
-                # Dispatch the tokens.
-                combine_indices = jnp.argsort(sorted_indices)
-                # [B' x S' x K, M]
-                sorted_inputs = _custom_gather(
-                    x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
-                )
-                tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
-
-                sorted_inputs, tokens_per_expert, additional_outputs, residuals = (
-                    self._dispatch_hook(
-                        sorted_inputs=sorted_inputs,
-                        tokens_per_expert=tokens_per_expert,
-                    )
-                )
-
-                # [B' x S' x K, H']
-                activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
-                activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
-
-                activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
-                activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
-
-                intermediate = activation_0 * activation_1
-
-                if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
-                    intermediate = self.dropout1(intermediate)
-
-                # [B' x S x K, M]
-                sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
-                if thread_resources.env.physical_mesh.shape["model"] > 1:
-                    # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
-                    # we do an allreduce.
-                    spec = cfg.output_dim_to_partition_spec["bsm"][2]
-                    if spec and "model" in spec:
-                        sorted_output = jax.lax.psum_scatter(
-                            sorted_output, "model", scatter_dimension=1, tiled=True
-                        )
-                    else:
-                        sorted_output = jax.lax.psum(sorted_output, "model")
-                # [B' x S' x K, M']
-                sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
-                # Gather the tokens to their original positions.
-                unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
-                # [B', S', K, M']
-                output = unsorted_output.reshape(
-                    B, S, num_experts_per_token, unsorted_output.shape[-1]
-                )
-                return output, *additional_outputs
-
-            return _gather_and_compute(
-                x,
-                gate_assignment,
-                wi_0_sharded,
-                wi_1_sharded,
-                wo_sharded,
+            # Sort tokens by expert assignment.
+            gate_assignment = gate_assignment.reshape((-1))  # [B' x S' x K]
+            sorted_indices = jnp.argsort(gate_assignment)
+            token_indices = sorted_indices // num_experts_per_token
+            combine_indices = jnp.argsort(sorted_indices)
+            # [B' x S' x K, M]
+            sorted_inputs = _custom_gather(
+                x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
             )
+            tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
+
+            sorted_inputs, tokens_per_expert, additional_outputs, residuals = self._dispatch_hook(
+                sorted_inputs=sorted_inputs,
+                tokens_per_expert=tokens_per_expert,
+            )
+
+            # [B' x S' x K, H']
+            activation_0 = get_activation_fn(cfg.activation[0])(
+                self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
+            )
+            activation_1 = get_activation_fn(cfg.activation[1])(
+                self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
+            )
+            intermediate = activation_0 * activation_1
+
+            if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
+                intermediate = self.dropout1(intermediate)
+
+            # [B' x S x K, M]
+            sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
+            if thread_resources.env.physical_mesh.shape["model"] > 1:
+                # Reduce-scatter if output is "model"-sharded; otherwise allreduce.
+                spec = cfg.output_dim_to_partition_spec["bsm"][2]
+                if spec and "model" in spec:
+                    sorted_output = jax.lax.psum_scatter(
+                        sorted_output, "model", scatter_dimension=1, tiled=True
+                    )
+                else:
+                    sorted_output = jax.lax.psum(sorted_output, "model")
+            # [B' x S' x K, M']
+            sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
+            unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
+            # [B', S', K, M']
+            output = unsorted_output.reshape(B, S, num_experts_per_token, unsorted_output.shape[-1])
+            return output, *additional_outputs
 
         out, *additional_outputs = wrapper(
             x,
@@ -2741,14 +2716,13 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         )
         self._additional_shmap_output_hook(additional_outputs)
 
-        # Apply expert weights outside shard_map to avoid passing extra tensor
-        # through the shard_map boundary and recomputing it in backward.
+        # Apply expert weights outside shard_map: keeps the extra [B, S, K] tensor off the
+        # boundary (would otherwise be saved as a residual and recomputed in backward).
         # out: [B, S, K, M'], expert_weights: [B, S, K]
         out *= expert_weights[..., None]
         assert expert_weights.dtype == jnp.float32
         assert out.dtype == jnp.float32
-        # [B, S, M']
-        out = jnp.sum(out, axis=-2).astype(x.dtype)
+        out = jnp.sum(out, axis=-2).astype(x.dtype)  # [B, S, M']
         return out
 
 
@@ -2866,3 +2840,23 @@ class V6eGMMTilingModifier(ConfigModifier):
 
         cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
         return cfg
+
+
+def _drop_manual_axes(axes: Union[str, tuple, None]) -> Union[str, tuple, None]:
+    """Drops Manual mesh axes from an axis-name collection for `jax.lax.all_gather`'s
+    `axis_name` (which rejects both Manual axes and `UNCONSTRAINED`).
+
+    Manual axes come from an enclosing `shard_map`; this helper looks them up via
+    `get_abstract_mesh()`. Outside `shard_map`, returns the input unchanged.
+    """
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if abstract_mesh.empty:
+        return axes
+    auto_axes = set(abstract_mesh.auto_axes)
+    if axes is None:
+        return None
+    if isinstance(axes, str):
+        return axes if axes in auto_axes else None
+    if isinstance(axes, tuple):
+        return tuple(a for a in axes if a in auto_axes)
+    raise TypeError(f"_drop_manual_axes: unsupported type {type(axes)}")

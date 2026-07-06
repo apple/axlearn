@@ -56,7 +56,7 @@ from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.flash_attention.splash_attention_mask import ComputableMask, classify_blocks
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.kv_cache import KVCache
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, manual_axes_to_none
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
 
@@ -1188,6 +1188,12 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
         additional_args_keys = ["fwd_mask_info", "dq_mask_info", "dkv_mask_info"]
         args, _ = kernel.tree_flatten()
         specs, _ = kernel.manual_sharding_spec(sharding).tree_flatten()
+        # Drop Manual axes (from an enclosing shard_map) — the inner shard_map's `in_specs`
+        # rejects them. Each `spec` is a `MaskInfo` pytree with `PartitionSpec` leaves.
+        specs = [
+            jax.tree.map(manual_axes_to_none, s, is_leaf=lambda x: isinstance(x, PartitionSpec))
+            for s in specs
+        ]
         kwargs = dict(zip(additional_args_keys, args))
         specs = dict(zip(additional_args_keys, specs))
         splash_fn = functools.partial(

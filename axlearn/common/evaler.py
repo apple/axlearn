@@ -37,8 +37,8 @@ from axlearn.common.utils import (
     NestedTensor,
     Tensor,
     input_partition_spec,
+    maybe_shard,
     replicate_to_local_data,
-    with_sharding_constraint,
 )
 
 
@@ -889,9 +889,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         # node will be set as None.
         concatenated_outputs = jax.tree.map(
             lambda xs: (
-                with_sharding_constraint(
-                    jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
-                )
+                maybe_shard(jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec())
                 if all(dim > 0 for dim in xs.shape[2:])
                 else None
             ),

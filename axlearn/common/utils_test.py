@@ -1072,6 +1072,268 @@ class SimilarNamesTest(TestCase):
         self.assertEqual(similar_names(name, candidates), expected)
 
 
+class ActivationShardingConstraintTest(TestCase):
+    """Tests `maybe_shard`, `manual_axes_to_none`, and `_manual_axes_to_unconstrained`.
+
+    `with_sharding_constraint` is strict — Manual axes in the spec are an error.
+    `maybe_shard` is the best-effort variant for forward-path activation hints: Manual axes
+    get downgraded to `UNCONSTRAINED`. `manual_axes_to_none` replaces Manual axes with
+    `None` in `PartitionSpec`s passed to `shard_map` `in_specs`/`out_specs`, which reject
+    `UNCONSTRAINED`. `_manual_axes_to_unconstrained` is the helper `maybe_shard` calls
+    internally.
+    """
+
+    @pytest.mark.for_8_devices
+    def test_strict_constraint_crashes_on_manual_axis(self):
+        """The strict `with_sharding_constraint` rejects Manual axes."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(x):
+            return utils.with_sharding_constraint(x, PartitionSpec("data", "model"))
+
+        with mesh, self.assertRaisesRegex(ValueError, "(Manual|manual)"):
+            f(jnp.ones((4, 2)))
+
+    @pytest.mark.for_8_devices
+    def test_maybe_shard_runs_under_shard_map(self):
+        """`maybe_shard` downgrades Manual axes and compiles."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(x):
+            # "data" is Manual here → downgraded to UNCONSTRAINED.
+            # "model" stays as a hint.
+            return utils.maybe_shard(x, PartitionSpec("data", "model"))
+
+        with mesh:
+            out = f(jnp.ones((4, 2)))
+        self.assertEqual(out.shape, (4, 2))
+
+    @pytest.mark.for_8_devices
+    def test_maybe_shard_tuple_and_all_manual(self):
+        """Tuple-axis entries with one Manual member, and an all-Manual entry."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(x):
+            # Tuple ("data", "model") → kept entry is just "model".
+            x = utils.maybe_shard(x, PartitionSpec(("data", "model"), None))
+            # All-Manual tuple ("data",) → UNCONSTRAINED.
+            x = utils.maybe_shard(x, PartitionSpec("data", None))
+            return x
+
+        with mesh:
+            out = f(jnp.ones((4, 2)))
+        self.assertEqual(out.shape, (4, 2))
+
+    @pytest.mark.for_8_devices
+    @parameterized.named_parameters(
+        # Fully sharded: dim 0 across "data"=4, dim 1 across "model"=2.
+        ("fully_sharded", PartitionSpec("data", "model"), (1, 1)),
+        # Dim 1 replicated: every shard holds the full row (2 elements). UNCONSTRAINED
+        # would let the compiler shard dim 1 across "model"=2.
+        ("replicate_dim1", PartitionSpec("data", None), (1, 2)),
+    )
+    def test_maybe_shard_outside_shard_map_is_strict(self, partition_spec, expected_shard_shape):
+        """Outside `shard_map`, `maybe_shard` behaves like `jax.lax.with_sharding_constraint`:
+        no Manual axes to downgrade, and `None` (replicate) is preserved.
+        """
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+        with mesh:
+            out = jax.jit(lambda x: utils.maybe_shard(x, partition_spec))(jnp.ones((4, 2)))
+        self.assertEqual(out.addressable_shards[0].data.shape, expected_shard_shape)
+
+    def test_manual_axes_to_unconstrained_no_op_without_mesh(self):
+        """With no abstract mesh set, `_manual_axes_to_unconstrained` passes `None` through
+        unchanged (does not promote to `UNCONSTRAINED`)."""
+        self.assertEqual(
+            utils._manual_axes_to_unconstrained(PartitionSpec("data", None)),
+            PartitionSpec("data", None),
+        )
+
+    @pytest.mark.for_8_devices
+    def test_maybe_shard_pytree_spec(self):
+        """For pytree-structured specs, callers use `jax.tree.map(maybe_shard, x, spec_tree)`."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        x_tree = (jnp.ones((4, 2)), jnp.ones((4, 2)))
+        spec_tree = (PartitionSpec("data", "model"), PartitionSpec("data", None))
+
+        @jax.jit
+        def f(xt):
+            return jax.tree.map(utils.maybe_shard, xt, spec_tree)
+
+        with mesh:
+            out = f(x_tree)
+        self.assertEqual(out[0].shape, (4, 2))
+        self.assertEqual(out[1].shape, (4, 2))
+
+    @pytest.mark.for_8_devices
+    @parameterized.parameters(
+        dict(value=PartitionSpec("data", "model"), expected=PartitionSpec(None, "model")),
+        dict(value=PartitionSpec(None, "model"), expected=PartitionSpec(None, "model")),
+    )
+    def test_manual_axes_to_none(self, value, expected):
+        """`manual_axes_to_none` replaces Manual axes with `None` in `PartitionSpec` dims
+        (used for shard_map `in_specs` / `out_specs`, which reject `UNCONSTRAINED`)."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+        captured: dict = {}
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(x):
+            captured["out"] = utils.manual_axes_to_none(value)
+            return x
+
+        with mesh:
+            f(jnp.ones((4, 2)))
+        self.assertEqual(captured["out"], expected)
+
+    @pytest.mark.for_8_devices
+    @parameterized.parameters(
+        dict(
+            spec=PartitionSpec("data", "model"),
+            expected=PartitionSpec(PartitionSpec.UNCONSTRAINED, "model"),
+        ),
+        # Explicit `None` (replicate) must NOT be promoted to UNCONSTRAINED.
+        dict(spec=PartitionSpec(None, "model"), expected=PartitionSpec(None, "model")),
+        # Explicit `UNCONSTRAINED` must be preserved as-is.
+        dict(
+            spec=PartitionSpec(PartitionSpec.UNCONSTRAINED, "model"),
+            expected=PartitionSpec(PartitionSpec.UNCONSTRAINED, "model"),
+        ),
+        dict(
+            spec=PartitionSpec(("data", "model"), None),
+            expected=PartitionSpec("model", None),
+        ),
+        dict(
+            spec=PartitionSpec(("data",), None),
+            expected=PartitionSpec(PartitionSpec.UNCONSTRAINED, None),
+        ),
+    )
+    def test_manual_axes_to_unconstrained(self, spec, expected):
+        """`manual_axes_to_unconstrained` promotes Manual axes to `UNCONSTRAINED`
+        (used to keep specs valid for `with_sharding_constraint`)."""
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+        captured: dict = {}
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(x):
+            captured["out"] = utils._manual_axes_to_unconstrained(spec)
+            return x
+
+        with mesh:
+            f(jnp.ones((4, 2)))
+        self.assertEqual(captured["out"], expected)
+
+    @pytest.mark.for_8_devices
+    def test_manual_axes_to_unconstrained_all_manual_asserts(self):
+        """`_manual_axes_to_unconstrained` requires at least one Auto axis; asserts otherwise.
+
+        In production, `maybe_shard` short-circuits before calling this helper when the
+        mesh is all-Manual, so the assert only fires on misuse.
+        """
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data"),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data", "model"},  # all axes Manual → no Auto axes remain
+        )
+        def f(x):
+            utils._manual_axes_to_unconstrained(PartitionSpec("data", "model"))
+            return x
+
+        with mesh, self.assertRaisesRegex(AssertionError, "at least one Auto axis"):
+            f(jnp.ones((4, 2)))
+
+    @pytest.mark.for_8_devices
+    def test_maybe_shard_all_manual_is_noop(self):
+        """`maybe_shard` returns `x` unchanged when the mesh is all-Manual — the
+        constraint is skipped rather than materialized as `with_sharding_constraint(None...)`.
+        """
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        @jax.jit
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=PartitionSpec("data", "model"),
+            out_specs=PartitionSpec("data", "model"),
+            check_vma=False,
+            axis_names={"data", "model"},  # all-Manual
+        )
+        def f(x):
+            return utils.maybe_shard(x, PartitionSpec("data", "model"))
+
+        with mesh:
+            out = f(jnp.ones((4, 2)))
+        # Each device already holds its local (1, 1) slice; no cross-shard motion.
+        self.assertEqual(out.addressable_shards[0].data.shape, (1, 1))
+
+
 class ContextManagerTest(TestWithTemporaryCWD):
     def test_runtime_checks(self):
         def f(x):

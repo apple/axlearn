@@ -41,8 +41,8 @@ from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, W
 from axlearn.common.utils import (
     Nested,
     flatten_items,
+    maybe_shard,
     validate_contains_paths,
-    with_sharding_constraint,
 )
 
 
@@ -688,7 +688,7 @@ class Model(BaseModel):
             if x.ndim <= 1:
                 return repeat(x, "... -> n ...", n=num_chunks)
             chunked_x = rearrange(x, "b (n c) ... -> n b c ...", n=num_chunks, c=scan_chunk)
-            chunked_x = with_sharding_constraint(
+            chunked_x = maybe_shard(
                 chunked_x,
                 PartitionSpec(
                     seq_shard,
@@ -832,12 +832,12 @@ class Model(BaseModel):
                 "input_positions",
             ]:
                 assert v.ndim == 2
-                input_batch[k] = with_sharding_constraint(
+                input_batch[k] = maybe_shard(
                     v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_names)
                 )
             elif k == "target_num_bytes":
                 assert v.ndim == 1
-                input_batch[k] = with_sharding_constraint(v, PartitionSpec(cfg.batch_axis_names))
+                input_batch[k] = maybe_shard(v, PartitionSpec(cfg.batch_axis_names))
             else:
                 # We warn as not-constraining may be an oversight.
                 logging.log_first_n(

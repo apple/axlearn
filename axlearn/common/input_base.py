@@ -20,8 +20,8 @@ from axlearn.common.utils import (
     as_numpy_array,
     dispatch_input_batch,
     input_partition_spec,
+    maybe_shard,
     tree_paths,
-    with_sharding_constraint,
 )
 
 
@@ -98,7 +98,7 @@ def partition_by_path_rank(
                 ):
                     continue
                 if partition_spec is not PartitionSpec.UNCONSTRAINED:
-                    value = with_sharding_constraint(value, partition_spec)
+                    value = maybe_shard(value, partition_spec)
                     logging.log_first_n(
                         logging.INFO,
                         "Constraining input_batch[%s] with %s.",
@@ -250,7 +250,7 @@ class Input(Module):
                     batch_partitions,
                     self._partition_spec,
                 )
-            return with_sharding_constraint(value, self._partition_spec)
+            return maybe_shard(value, self._partition_spec)
 
         if "input_dispatcher" in self.children:
             global_logical_batch = self.input_dispatcher.physical_to_logical_batch(

@@ -22,8 +22,8 @@ from axlearn.common.module import Module
 from axlearn.common.utils import (
     Tensor,
     get_current_abstract_or_physical_mesh,
+    manual_axes_to_none,
     maybe_shard,
-    with_sharding_constraint,
 )
 
 
@@ -130,9 +130,37 @@ class FlashAttention(GroupedQueryAttention):
             backend = jax.default_backend()
         return backend
 
-    def _logit_biases_spec(self, attention_logit_biases: BaseAttentionBias) -> BaseAttentionBias:
+    def _shard_logit_biases(
+        self, attention_logit_biases: BaseAttentionBias
+    ) -> tuple[BaseAttentionBias, BaseAttentionBias]:
+        """Applies the activation-hint sharding to `attention_logit_biases` and returns
+        the shard_map-safe spec for reuse as `shard_map`'s `in_specs["bias"]`.
+
+        Handles both `CompositeAttentionBias` (dataclass tree of `PartitionSpec` leaves)
+        and `ZeroAttentionBias` (bare `PartitionSpec`) via prefix broadcast + tree.map.
+
+        Returns:
+            A tuple `(sharded_bias, in_specs_spec)`. The spec has any Manual axes
+            replaced with `None` (safe for `shard_map`'s `in_specs`).
+        """
         cfg = self.config
-        return attention_logit_biases.partition_spec(cfg.mha_dim_to_partition_spec)
+        spec = attention_logit_biases.partition_spec(cfg.mha_dim_to_partition_spec)
+        if isinstance(spec, PartitionSpec):
+            # Bare `PartitionSpec` (e.g. `ZeroAttentionBias`) — `maybe_shard` internally
+            # calls `with_sharding_constraint`, which prefix-broadcasts across the pytree.
+            sharded = maybe_shard(attention_logit_biases, spec)
+        else:
+            # Dataclass tree of `PartitionSpec` leaves — align structure via tree.map.
+            sharded = jax.tree.map(
+                lambda s, b: maybe_shard(b, s),
+                spec,
+                attention_logit_biases,
+                is_leaf=lambda s: isinstance(s, PartitionSpec),
+            )
+        in_specs_spec = jax.tree.map(
+            manual_axes_to_none, spec, is_leaf=lambda s: isinstance(s, PartitionSpec)
+        )
+        return sharded, in_specs_spec
 
     def _maybe_repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
         """Repeats key or value heads dim to be shardable."""
@@ -262,9 +290,8 @@ class FlashAttention(GroupedQueryAttention):
         else:
             source_len = k_proj.shape[1] * page_indices.shape[-1]
 
-        attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
-        attention_logit_biases = with_sharding_constraint(
-            attention_logit_biases, attention_logit_biases_spec
+        attention_logit_biases, attention_logit_biases_spec = self._shard_logit_biases(
+            attention_logit_biases
         )
 
         query_partition_spec = cfg.mha_dim_to_partition_spec["btnh"]
@@ -272,9 +299,9 @@ class FlashAttention(GroupedQueryAttention):
         kv_partition = "bsnh" if page_indices is None else "nbph"
 
         # Constrain input to conform to partitioned MHA expectations.
-        q_proj = with_sharding_constraint(q_proj, query_partition_spec)
-        k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec[kv_partition])
-        v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec[kv_partition])
+        q_proj = maybe_shard(q_proj, query_partition_spec)
+        k_proj = maybe_shard(k_proj, cfg.mha_dim_to_partition_spec[kv_partition])
+        v_proj = maybe_shard(v_proj, cfg.mha_dim_to_partition_spec[kv_partition])
 
         # For PRNG key, extract all sharded axes to ensure unique dropout across all devices.
         # Flatten nested tuples into a single tuple for 1D PartitionSpec, so each device gets (4,).
@@ -286,25 +313,32 @@ class FlashAttention(GroupedQueryAttention):
             self.dropout.get_prng_key(), prng_key_partition_spec, thread_resources.env.physical_mesh
         )
 
-        # We need to manually partition pallas | jax-triton calls.
+        # We need to manually partition pallas | jax-triton calls. `shard_map`'s `in_specs`
+        # reject Manual axes and UNCONSTRAINED, so each spec is filtered through
+        # `manual_axes_to_none` — the outer `shard_map` (if any) already partitions those
+        # axes, so this inner one has no work to do on them.
+        logit_sink_spec = (
+            PartitionSpec(None)
+            if logit_sink is None or len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3
+            else PartitionSpec(cfg.mha_dim_to_partition_spec["bsnh"][2])
+        )
         input_batch_specs = {
             # Q [batch_size, seq_len, num_heads, per_head_dim].
-            "query": query_partition_spec,
+            "query": manual_axes_to_none(query_partition_spec),
             # KV [batch_size, seq_len, repeated_num_heads, per_head_dim].
             # repeated_num_heads should be divided evenly by the n axis.
-            "key": cfg.mha_dim_to_partition_spec[kv_partition],
-            "value": cfg.mha_dim_to_partition_spec[kv_partition],
-            "prng_key": prng_key_partition_spec,
+            "key": manual_axes_to_none(cfg.mha_dim_to_partition_spec[kv_partition]),
+            "value": manual_axes_to_none(cfg.mha_dim_to_partition_spec[kv_partition]),
+            "prng_key": manual_axes_to_none(prng_key_partition_spec),
             # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
+            # Spec already has Manual axes dropped by `_shard_logit_biases`.
             "bias": attention_logit_biases_spec,
             # Logit sink values of shape [num_heads].
-            "logit_sink": (
-                PartitionSpec(None)
-                if logit_sink is None or len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3
-                else PartitionSpec(cfg.mha_dim_to_partition_spec["bsnh"][2])
-            ),
+            "logit_sink": manual_axes_to_none(logit_sink_spec),
             # PagedKVCache's page indices.
-            "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
+            "page_tables": manual_axes_to_none(
+                cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None))
+            ),
             **flash_specs.additional_in_specs,
         }
         partitioned_mha = jax.shard_map(
@@ -312,7 +346,7 @@ class FlashAttention(GroupedQueryAttention):
             mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(input_batch_specs,),
             # O [batch_size, seq_len, num_heads, per_head_dim].
-            out_specs=query_partition_spec,
+            out_specs=manual_axes_to_none(query_partition_spec),
             # Disables a checking pass which jax can't apply when there's a triton | pallas
             # call in the body.
             check_vma=False,
@@ -330,12 +364,12 @@ class FlashAttention(GroupedQueryAttention):
             "page_tables": page_indices,
             **flash_specs.additional_kwargs,
         }
-        outputs = with_sharding_constraint(
+        outputs = maybe_shard(
             partitioned_mha(input_batch), cfg.output_dim_to_partition_spec["btnh"]
         )
 
         # TODO(markblee): Add output probs and benchmark.
-        output_probs = with_sharding_constraint(
+        output_probs = maybe_shard(
             jnp.empty((batch, num_heads, target_len, source_len)),
             cfg.output_dim_to_partition_spec["bnts"],
         )

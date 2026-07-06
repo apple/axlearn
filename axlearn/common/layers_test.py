@@ -531,7 +531,7 @@ class LayerTest(TestCase):
         # The output_norm should be close to 2 * sqrt(dim).
         assert_allclose(output_norm, np.ones_like(output_norm) * 2.0 * math.sqrt(dim))
 
-    @mock.patch("axlearn.common.utils.with_sharding_constraint")
+    @mock.patch("axlearn.common.layers.maybe_shard")
     def test_rms_norm_partition_specs_constraint(self, mock_with_sharding_constraint):
         # Configure mock to return its input.
         mock_with_sharding_constraint.side_effect = lambda x, *args: x
@@ -1389,10 +1389,9 @@ class EmbedTest(parameterized.TestCase):
         )[0]
         assert_allclose(jnp.dot(x, state["weight"].T), actual_attends)
 
-    @mock.patch("axlearn.common.utils.with_sharding_constraint")
-    def test_embed_partition_specs_constraint(self, mock_with_sharding_constraint):
-        # Configure mock to return its input.
-        mock_with_sharding_constraint.side_effect = lambda x, *args: x
+    @mock.patch("axlearn.common.layers.maybe_shard")
+    def test_embed_partition_specs_constraint(self, mock_maybe_shard):
+        mock_maybe_shard.side_effect = lambda x, *args: x
 
         dim = 16
         num_embeddings = 100
@@ -1417,27 +1416,22 @@ class EmbedTest(parameterized.TestCase):
         ixs = jax.random.randint(rng, minval=0, maxval=num_embeddings, shape=(3, seq_len))
         actual_embeds, _ = module.functional(emb, rng, state=state, inputs=[ixs], is_training=True)
 
-        # Verify with_sharding_constraint was called in correct order with proper specs.
-        calls = mock_with_sharding_constraint.call_args_list
+        # `maybe_shard` runs on (input indices, embedding weight, output activations).
+        calls = mock_maybe_shard.call_args_list
         self.assertEqual(len(calls), 3)
 
         # 1. Input activation constraint (indices tensor).
-        input_spec = calls[0].args[1]
-        self.assertEqual(input_spec, ("fsdp", None))
+        self.assertEqual(calls[0].args[1], ("fsdp", None))
         self.assertEqual(calls[0].args[0].shape, (3, seq_len))
         self.assertEqual(calls[0].args[0].dtype, jnp.int32)
         np.testing.assert_array_equal(calls[0].args[0], ixs)
 
-        # 2. Embedding weight constraint.
-        weight_spec = calls[1].args[1]
-        self.assertEqual(weight_spec, ("model", "fsdp"))
-        self.assertEqual(calls[1].args[0].shape, (num_embeddings, dim))
-        self.assertEqual(calls[1].args[0].dtype, jnp.float32)
+        # 2. Embedding weight (parameter — still routed through maybe_shard).
+        self.assertEqual(calls[1].args[1], ("model", "fsdp"))
         np.testing.assert_array_equal(calls[1].args[0], state["weight"])
 
         # 3. Output activation constraint (after lookup).
-        output_spec = calls[2].args[1]
-        self.assertEqual(output_spec, ("fsdp", "model"))
+        self.assertEqual(calls[2].args[1], ("fsdp", "model"))
         self.assertEqual(calls[2].args[0].shape, (3, seq_len, dim))
         self.assertEqual(calls[2].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[2].args[0], actual_embeds)

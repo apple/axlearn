@@ -26,7 +26,6 @@ import jax
 from absl import logging
 from jax import nn
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec
 
 from axlearn.common import convolution
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterNoise, ParameterSpec
@@ -57,7 +56,6 @@ from axlearn.common.utils import (
     Tensor,
     maybe_shard,
     partial_with_fn_metadata,
-    with_sharding_constraint,
 )
 
 # TODO(dhwang2): remove them.
@@ -758,10 +756,9 @@ class Linear(DenseGeneralBaseLayer):
 
     def _maybe_shard(self, output: Tensor) -> Tensor:
         cfg = self.config
-        if cfg.output_partition_spec is None:
-            return output
-        assert len(output.shape) == len(cfg.output_partition_spec)
-        return with_sharding_constraint(output, PartitionSpec(*cfg.output_partition_spec))
+        if cfg.output_partition_spec is not None:
+            assert len(output.shape) == len(cfg.output_partition_spec)
+        return maybe_shard(output, cfg.output_partition_spec)
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config

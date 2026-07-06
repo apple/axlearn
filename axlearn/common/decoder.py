@@ -7,7 +7,6 @@ from typing import Callable, Optional, Protocol, Union
 
 import jax
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec
 
 from axlearn.common import logit_modifiers
 from axlearn.common.attention import (
@@ -54,7 +53,6 @@ from axlearn.common.utils import (
     maybe_shard,
     sequence_mask,
     validate_contains_paths,
-    with_sharding_constraint,
 )
 
 
@@ -630,7 +628,7 @@ class Decoder(BaseLayer):
 
         if self._output_logits_modifier is not None:
             logits = self._output_logits_modifier(logits)
-        logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
+        logits = maybe_shard(logits, self.config.logits_partition_spec)
         return logits
 
     def forward(

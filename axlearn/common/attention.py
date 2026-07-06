@@ -82,7 +82,6 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Unio
 import jax
 from absl import logging
 from jax import numpy as jnp
-from jax._src.mesh import get_abstract_mesh, thread_resources
 
 from axlearn.common import param_init
 from axlearn.common.attention_bias import (
@@ -152,7 +151,6 @@ from axlearn.common.utils import (
     save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
-    with_sharding_constraint,
 )
 
 
@@ -1053,25 +1051,12 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
             proj, [cfg.num_heads, cfg.num_heads + cfg.num_kv_heads], axis=-2
         )
         if (spec := cfg.output_partition_spec) is None:
-            # This sharding hint is needed since compiler sometimes will generate large allgather
-            # before the split and then slice, which is not the ideal compilation. Ensure sharding
-            # after the split to ensure allgather is inserted after the split.
-            # Use get_abstract_mesh() to respect shard_map Manual axes.
-            auto_axes = set(get_abstract_mesh().auto_axes)
-            batch_axes = tuple(
-                x
-                for x in thread_resources.env.physical_mesh.axis_names
-                if x in ("data", "fsdp") and x in auto_axes
-            )
-            spec = PartitionSpec(
-                batch_axes or PartitionSpec.UNCONSTRAINED,
-                "seq" if "seq" in auto_axes else PartitionSpec.UNCONSTRAINED,
-                "model" if "model" in auto_axes else PartitionSpec.UNCONSTRAINED,
-                PartitionSpec.UNCONSTRAINED,
-            )
-        q_proj = with_sharding_constraint(q_proj, spec)
-        k_proj = with_sharding_constraint(k_proj, spec)
-        v_proj = with_sharding_constraint(v_proj, spec)
+            # Constrain after the split so XLA inserts the allgather post-slice rather than
+            # materializing the pre-split tensor.
+            spec = PartitionSpec(("data", "fsdp"), "seq", "model", PartitionSpec.UNCONSTRAINED)
+        q_proj = maybe_shard(q_proj, spec)
+        k_proj = maybe_shard(k_proj, spec)
+        v_proj = maybe_shard(v_proj, spec)
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -1999,6 +1984,7 @@ class MultiheadAttention(BaseLayer):
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
             key_positions = key_positions + time_step[:, None]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
+        # Activation hints (set via `set_attention_partition_specs(set_attn_activation_specs=True)`).
         q_proj = maybe_shard(q_proj, cfg.q_partition_spec)
         k_proj = maybe_shard(k_proj, cfg.k_partition_spec or cfg.q_partition_spec)
         v_proj = maybe_shard(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)

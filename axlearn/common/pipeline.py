@@ -45,9 +45,9 @@ from axlearn.common.utils import (
     NestedPartitionSpec,
     VDict,
     get_or_none,
+    maybe_shard,
     shapes,
     split_prng_key,
-    with_sharding_constraint,
 )
 
 
@@ -75,7 +75,7 @@ def transpose_to_pipeline_stage_inputs(x: Tensor, partition_spec: Optional[Parti
     # Apply sharding constraints at the first opportunity after reshapes
     # (i.e. when the input is first in the right shape for the constraint again).
     if partition_spec is not None:
-        x = with_sharding_constraint(x, partition_spec)
+        x = maybe_shard(x, partition_spec)
     # [M + N - 1, N, ...].
     x = jnp.transpose(x, [1, 0] + list(range(2, x.ndim)))
     return x
@@ -108,7 +108,7 @@ def transpose_from_pipeline_stage_outputs(
     # Apply sharding constraints at the first opportunity after reshapes
     # (i.e. when the input is first in the right shape for the constraint again).
     if partition_spec is not None:
-        x = with_sharding_constraint(x, partition_spec)
+        x = maybe_shard(x, partition_spec)
     # [N, M, ...].
     x = x[:, :m]
     return x
@@ -155,7 +155,7 @@ def _mask_invalid_gradients(state: Nested[Tensor], *, is_valid: Tensor) -> Neste
 
 def _shard_pipeline(x: Tensor, *, axis: int = 0) -> Tensor:
     """Shards axis over 'pipeline'."""
-    return with_sharding_constraint(
+    return maybe_shard(
         x,
         PartitionSpec(
             *(PartitionSpec.UNCONSTRAINED for _ in x.shape[:axis]),
@@ -835,13 +835,11 @@ class Pipeline(BaseLayer):
                 self.vlog(3, "output_collection_tn=%s", shapes(output_collection_tn))
                 return dict(carry=carry_tn, y=y_tn, output_collection=output_collection_tn)
 
-            carry = jax.tree.map(with_sharding_constraint, carry, carry_partition_spec)
+            carry = jax.tree.map(maybe_shard, carry, carry_partition_spec)
             scan_ys = self._schedule.scan(
                 vmap_fn, carry=carry, state=layer_context.state, xs=(prng_keys, padded_xs)
             )
-            final_carry = jax.tree.map(
-                with_sharding_constraint, scan_ys.pop("carry"), carry_partition_spec
-            )
+            final_carry = jax.tree.map(maybe_shard, scan_ys.pop("carry"), carry_partition_spec)
 
             ys = scan_ys["y"]
             if ys_partition_spec is None:

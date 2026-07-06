@@ -37,6 +37,7 @@ from axlearn.common.attention_bias import (
     SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
     TensorAttentionBias,
+    ZeroAttentionBias,
     and_masks,
     bool_to_bias,
     causal_mask,
@@ -401,19 +402,19 @@ class TestFlashAttention(TestCase):
             )
             bias = jnp.ones((batch, num_heads, seq_len, seq_len))
             bias = as_tensor_bias(bias)
-            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            _, spec = test_layer._shard_logit_biases(bias)  # pylint: disable=protected-access
             spec = as_partition_spec(spec)
             self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bnts"])
 
             bias = jnp.ones((batch, 1, seq_len, seq_len))
             bias = as_tensor_bias(bias)
-            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            _, spec = test_layer._shard_logit_biases(bias)  # pylint: disable=protected-access
             spec = as_partition_spec(spec)
             self.assertEqual(spec[1], None)
 
             bias = jnp.ones((1, 1, seq_len, seq_len))
             bias = as_tensor_bias(bias)
-            spec = test_layer._logit_biases_spec(bias)  # pylint: disable=protected-access
+            _, spec = test_layer._shard_logit_biases(bias)  # pylint: disable=protected-access
             spec = as_partition_spec(spec)
             self.assertEqual(spec[0], None)
             self.assertEqual(spec[1], None)
@@ -421,10 +422,136 @@ class TestFlashAttention(TestCase):
             segment_ids = CompositeAttentionBias(
                 [SegmentIdAttentionBias(jnp.ones((batch, seq_len)))]
             )
-            spec = test_layer._logit_biases_spec(segment_ids)  # pylint: disable=protected-access
+            _, spec = test_layer._shard_logit_biases(segment_ids)  # pylint: disable=protected-access
             spec = as_partition_spec(spec)
             self.assertIsInstance(spec, PartitionSpec)
             self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["btnh"][:2])
+
+    @pytest.mark.for_8_devices
+    def test_shard_logit_biases_pytree_shape(self):
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+
+        with Mesh(mesh.devices, ("data", "model")):
+            test_layer, _, _, _ = _prepare_layers(
+                num_heads=2,
+                num_kv_heads=2,
+                per_head_dim=4,
+                mesh_axis_names=("data", "model"),
+                mask=CausalAttentionBias.default_config(),
+            )
+            test_layer.config.mha_dim_to_partition_spec["btnh"] = PartitionSpec(
+                "data", None, "model", None
+            )
+            test_layer.config.mha_dim_to_partition_spec["bnts"] = PartitionSpec(
+                "data", "model", None, None
+            )
+
+            composite = CompositeAttentionBias([TensorAttentionBias(jnp.ones((1, 2, 4, 4)))])
+            _, composite_spec = test_layer._shard_logit_biases(  # pylint: disable=protected-access
+                composite
+            )
+            composite_leaves = jax.tree.leaves(composite_spec)
+            self.assertEqual(len(composite_leaves), 1)
+            # Spec is Manual-axis-safe for `shard_map` `in_specs` (Manual axes replaced with
+            # `None`). Here no Manual axes → the spec is what `partition_spec` produced,
+            # with batch collapsed to `None` because shape[0] == 1.
+            self.assertEqual(composite_leaves[0], PartitionSpec(None, "model", None, None))
+
+            _, zero_spec = test_layer._shard_logit_biases(  # pylint: disable=protected-access
+                ZeroAttentionBias()
+            )
+            self.assertEqual(zero_spec, PartitionSpec())
+
+            # Mixed `CompositeAttentionBias([ZeroAttentionBias, CausalAttentionBias])` — the
+            # `partition_spec` result is `CompositeAttentionBias([PartitionSpec(), ...])`, i.e.
+            # a bare `PartitionSpec` sits where the `ZeroAttentionBias` is. Regression: the
+            # earlier `jax.tree.map(fn, bias, spec, is_leaf=...)` order flattened `bias` first
+            # and tried to match `ZeroAttentionBias`'s dataclass structure against the bare
+            # `PartitionSpec()`, raising `Custom node type mismatch`.
+            batch, seq_len = 1, 4
+            mixed = CompositeAttentionBias(
+                [
+                    ZeroAttentionBias(),
+                    CausalAttentionBias(
+                        target_positions=jnp.zeros((batch, seq_len), dtype=jnp.int32),
+                        source_positions=jnp.zeros((batch, seq_len), dtype=jnp.int32),
+                    ),
+                ]
+            )
+            sharded, _ = test_layer._shard_logit_biases(mixed)  # pylint: disable=protected-access
+            self.assertIsInstance(sharded, CompositeAttentionBias)
+            self.assertIsInstance(sharded.biases[0], ZeroAttentionBias)
+            self.assertIsInstance(sharded.biases[1], CausalAttentionBias)
+
+    @pytest.mark.for_8_devices
+    def test_forward_inside_outer_shard_map(self):
+        """Runs `FlashAttention.__call__` inside an outer `shard_map` that flags `data` Manual."""
+        mesh_shape = (4, 2)
+        mesh_axis_names = ("data", "model")
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
+
+        mesh = Mesh(mesh_utils.create_device_mesh(mesh_shape), mesh_axis_names)
+        with mesh:
+            test_layer, _, params, hidden_dim = _prepare_layers(
+                num_heads=2,
+                num_kv_heads=2,
+                per_head_dim=32,
+                mesh_axis_names=mesh_axis_names,
+                mask=CausalAttentionBias.default_config(),
+                tpu_block_size=128,
+            )
+            batch, seq_len = 4, 256
+            inputs = _fake_inputs(
+                batch=batch,
+                num_heads=2,
+                kv_len=seq_len,
+                query_len=seq_len,
+                hidden_dim=hidden_dim,
+                use_bias=False,
+                use_segment_ids=False,
+            )
+
+            def call_flash(query, key, value, bias):
+                out, _ = F(
+                    test_layer,
+                    prng_key=jax.random.PRNGKey(0),
+                    state=params,
+                    inputs=dict(
+                        query=query,
+                        key=key,
+                        value=value,
+                        attention_logit_biases=bias,
+                        segment_ids=None,
+                    ),
+                    is_training=True,
+                )
+                return out.data
+
+            # Outer shard_map marks "data" Manual. `FlashAttention` uses "data" for batch in
+            # its `mha_dim_to_partition_spec`; the helpers must drop it in inner specs.
+            sharded = jax.jit(
+                jax.shard_map(
+                    call_flash,
+                    mesh=mesh,
+                    in_specs=(
+                        PartitionSpec("data"),
+                        PartitionSpec("data"),
+                        PartitionSpec("data"),
+                        PartitionSpec(),
+                    ),
+                    out_specs=PartitionSpec("data"),
+                    check_vma=False,
+                    axis_names={"data"},
+                )
+            )
+            out = sharded(
+                inputs["query"], inputs["key"], inputs["value"], inputs["attention_logit_biases"]
+            )
+            self.assertEqual(out.shape, (batch, seq_len, hidden_dim))
+        jax.clear_caches()
 
     # ---- Forward tests ----
 

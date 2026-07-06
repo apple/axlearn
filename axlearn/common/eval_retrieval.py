@@ -29,7 +29,7 @@ from axlearn.common.metrics_retrieval import (
     top_k_recall,
 )
 from axlearn.common.module import Module
-from axlearn.common.utils import NestedPartitionSpec, NestedTensor, Tensor, with_sharding_constraint
+from axlearn.common.utils import NestedPartitionSpec, NestedTensor, Tensor, maybe_shard
 
 
 def clip_generate_labels(sentence_paddings: Tensor) -> dict[str, Tensor]:
@@ -128,9 +128,9 @@ def calculate_clip_retrieval_metrics(
         - "i2t_top@{k}": image-to-text accuracy at top-k
         - "t2i_top@{k}": text-to-image accuracy at top-k
     """
-    visual_embeddings = with_sharding_constraint(visual_embeddings, PartitionSpec(None, None))
-    textual_embeddings = with_sharding_constraint(textual_embeddings, PartitionSpec(None, None))
-    valid_sentences = with_sharding_constraint(valid_sentences, PartitionSpec(None, None))
+    visual_embeddings = maybe_shard(visual_embeddings, PartitionSpec(None, None))
+    textual_embeddings = maybe_shard(textual_embeddings, PartitionSpec(None, None))
+    valid_sentences = maybe_shard(valid_sentences, PartitionSpec(None, None))
     num_examples, num_sentences = valid_sentences.shape
     dim = visual_embeddings.shape[-1]
     assert textual_embeddings.shape == (
