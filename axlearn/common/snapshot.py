@@ -48,10 +48,15 @@ class Snapshotter:
         with self._lock:
           self._latest_snapshot = (pinned_state, step)
       except Exception as e:  # pylint: disable=broad-except
+        err_msg = "Unknown error"
+        try:
+          err_msg = str(e)
+        except Exception:
+          err_msg = f"JAX Runtime Exception of type {type(e).__name__} (suppressed tensor evaluation)"
         _logger.warning(
             "[*] [Snapshot Thread] Failed to secure snapshot at step %d: %s.",
             step,
-            e,
+            err_msg,
         )
       finally:
         print("In snapshot worker finally")

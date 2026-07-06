@@ -119,7 +119,7 @@ flags.DEFINE_string(
 
 FLAGS = flags.FLAGS
 
-elastic_snapshotting_enabled = True
+elastic_snapshotting_enabled = False
 
 
 def get_trainer_config(
@@ -215,36 +215,37 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
             )
     
     elastic_manager = None
-    if elastic_snapshotting_enabled and any(hasattr(d, "slice_index") for d in jax.devices()):
+    if elastic_snapshotting_enabled and any(hasattr(d, "slice_index") for d in live_devices()):
         elastic_manager = manager.Manager()
 
-    with (
-          watchdog.watchdog("step-stack-status", timeout=60),
-          watchdog.watchdog("step-timebomb", timeout=10 * 60, repeat=False),
-        ):
-            try:
-                if elastic_manager and elastic_manager.new_slice_event.is_set():
-                    print("New slice event is set from elastic manager")
-                    trainer = sync_restore_class_vars(jax_device_state, python_vars, immutable_data)
-                    prng_key = jax_device_state["_trainer_state"].prng_key
-                else:
-                    trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
-                    prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-                output = trainer.run(prng_key)
-                measurement.record_event(measurement.Event.END_JOB)
-                
-            
-            except jax.errors.JaxRuntimeError as e:
-                if elastic_manager and elastic.is_error_due_to_slice_down(e):
-                    # Slice Failure Recovery
-                    print("Lost slice event is set from elastic manager")
-                    logging.exception(
-                        "[!] Elastic event detected around step %d", immutable_data["_step"]
-                    )
-                    sync_restore_class_vars(jax_device_state, python_vars, immutable_data)
-                pass
+    output = None
+    while True:
+        try:
+            clean_trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
 
-               
-                    
+            if elastic_manager and elastic_manager.new_slice_event.is_set():
+                print("New slice event is set from elastic manager")
+                elastic_manager.new_slice_event.clear()
+                trainer, prng_key = sync_restore_class_vars(clean_trainer, jax_device_state, python_vars, immutable_data)
+            else:
+                trainer = clean_trainer
+                prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
+
+            output = trainer.run(prng_key)
+            measurement.record_event(measurement.Event.END_JOB)
+            break
+            
         
+        except jax.errors.JaxRuntimeError as e:
+            if elastic_manager and elastic.is_error_due_to_slice_down(e):
+                # Slice Failure Recovery
+                print("Lost slice event is set from elastic manager")
+                logging.exception(
+                    "[!] Elastic event detected around step %d", immutable_data.get("_step", -1)
+                )
+                #sync_store_class_vars(trainer)
+                elastic_manager.new_slice_event.set()
+                continue
+            else:
+                raise e
     return output
