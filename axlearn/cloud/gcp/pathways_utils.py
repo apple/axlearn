@@ -604,10 +604,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # If multi-head, every pathways-head will only
         # be connected to one pathways instance (a pathways-worker replicated job).
         pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
+        num_elastic_slices = 1
 
         cmd_args = [
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
+            f"--num_elastic_slices={num_elastic_slices}",
         ]
         if self._colocated_python.is_colocated_python_enabled:
             cmd_args.append("--sidecar_name=external")

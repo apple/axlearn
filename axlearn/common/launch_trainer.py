@@ -12,8 +12,11 @@ from absl import flags, logging
 from axlearn.common import file_system as fs
 from axlearn.common import measurement
 from axlearn.common.config import TrainerConfigFn, get_named_trainer_config
-from axlearn.common.trainer import SpmdTrainer, select_mesh_config
-from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
+from axlearn.common.trainer import SpmdTrainer, select_mesh_config, sync_restore_class_vars, sync_store_class_vars, jax_device_state, python_vars, immutable_data
+from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape, live_devices
+from pathwaysutils.elastic import manager, elastic
+from pathwaysutils.debug import watchdog
+
 
 # Trainer-specific flags.
 flags.DEFINE_string(
@@ -116,6 +119,8 @@ flags.DEFINE_string(
 
 FLAGS = flags.FLAGS
 
+elastic_snapshotting_enabled = False
+
 
 def get_trainer_config(
     trainer_config_fn: Optional[TrainerConfigFn] = None,
@@ -148,7 +153,8 @@ def get_trainer_config(
     if flag_values.mesh_selector is not None:
         select_mesh_config(trainer_config, mesh_selector=flag_values.mesh_selector)
     trainer_config.mesh_axis_names = trainer_config.mesh_axis_names or ("data", "model")
-    trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
+    #trainer_config.mesh_shape = trainer_config.mesh_shape or (len(jax.devices()), 1)
+    trainer_config.mesh_shape = trainer_config.mesh_shape or (len(live_devices()), 1)
     if isinstance(trainer_config.mesh_shape, MeshShape):
         trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in flag_values.trace_at_steps]
@@ -207,9 +213,39 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 },
                 f,
             )
+    
+    elastic_manager = None
+    if elastic_snapshotting_enabled and any(hasattr(d, "slice_index") for d in live_devices()):
+        elastic_manager = manager.Manager()
 
-    trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
-    prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-    output = trainer.run(prng_key)
-    measurement.record_event(measurement.Event.END_JOB)
+    output = None
+    while True:
+        try:
+            clean_trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+
+            if elastic_manager and elastic_manager.new_slice_event.is_set():
+                print("New slice event is set from elastic manager")
+                elastic_manager.new_slice_event.clear()
+                trainer, prng_key = sync_restore_class_vars(clean_trainer, jax_device_state, python_vars, immutable_data)
+            else:
+                trainer = clean_trainer
+                prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
+
+            output = trainer.run(prng_key)
+            measurement.record_event(measurement.Event.END_JOB)
+            break
+            
+        
+        except jax.errors.JaxRuntimeError as e:
+            if elastic_manager and elastic.is_error_due_to_slice_down(e):
+                # Slice Failure Recovery
+                print("Lost slice event is set from elastic manager")
+                logging.exception(
+                    "[!] Elastic event detected around step %d", immutable_data.get("_step", -1)
+                )
+                #sync_store_class_vars(trainer)
+                elastic_manager.new_slice_event.set()
+                continue
+            else:
+                raise e
     return output

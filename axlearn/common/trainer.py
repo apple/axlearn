@@ -10,7 +10,7 @@ import signal
 import threading
 import time
 from collections.abc import Sequence
-from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union
+from typing import Any, Callable, ContextManager, Literal, NamedTuple, Optional, Union, TYPE_CHECKING
 
 import jax
 import numpy as np
@@ -18,6 +18,10 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
+from pathwaysutils.elastic import manager
+from pathwaysutils.debug import watchdog
+
+
 
 from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
@@ -33,6 +37,7 @@ from axlearn.common.config import (
     config_class,
     maybe_instantiate,
     maybe_set_config,
+    config_for_class,
 )
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.input_base import Input
@@ -49,6 +54,8 @@ from axlearn.common.module import functional as F
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
+from axlearn.common.snapshot import Snapshotter
+
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
@@ -67,8 +74,189 @@ from axlearn.common.utils import (
     host_to_global_specs,
     match_regex_rules,
     thread_stack_traces,
+    live_devices,
 )
 
+jax_device_state = {}
+python_vars = {}
+immutable_data = {}
+
+def sync_restore_class_vars(
+    fresh_trainer: Any,
+    jax_device_state_arg: dict = None, python_vars_arg: dict = None, immutable_data_arg: dict = None
+) -> tuple[Any, Any]:
+    """Restores trainer state onto a fresh SpmdTrainer instance from snapshot."""
+    print("sync_restore_class_vars")
+    global jax_device_state, python_vars, immutable_data
+
+    print(immutable_data)
+
+    use_python_vars = python_vars_arg if python_vars_arg is not None else python_vars
+    use_immutable_data = immutable_data_arg if immutable_data_arg is not None else immutable_data
+
+    for k, v in use_immutable_data.items():
+        if isinstance(v, (int, float, str, bool)):
+            setattr(fresh_trainer, k, v)
+            
+    if "_step" in use_python_vars and getattr(fresh_trainer, "_step", None) is None:
+        try:
+            fresh_trainer._step = int(use_python_vars["_step"])
+        except Exception:
+            pass
+
+    live_devs = utils.live_devices()
+    logging.info("[!] Found %d available live devices.", len(live_devs))
+
+    cfg = fresh_trainer.config
+    device_platform = live_devs[0].platform
+    device_attr = "process_index" if device_platform != "tpu" else "slice_index"
+
+    num_granules = len({getattr(el, device_attr) for el in live_devs})
+    num_devices_per_granule = len(live_devs) // num_granules
+
+    original_mesh_shape = list(cfg.mesh_shape)
+    if len(original_mesh_shape) > 0:
+        original_mesh_shape[0] = num_granules
+
+        ici_shape = original_mesh_shape[1:]
+        current_ici_prod = math.prod(ici_shape)
+        if current_ici_prod != num_devices_per_granule:
+            logging.info("[!] ICI product %d does not match num_devices_per_granule %d. Adjusting...", current_ici_prod, num_devices_per_granule)
+            ratio = current_ici_prod // num_devices_per_granule
+            if ratio > 0 and current_ici_prod % num_devices_per_granule == 0:
+                for i in range(len(ici_shape)):
+                    if ici_shape[i] % ratio == 0 and ici_shape[i] > 1:
+                        ici_shape[i] = ici_shape[i] // ratio
+                        break
+            else:
+                ici_shape = [1] * len(ici_shape)
+                ici_shape[-3] = num_devices_per_granule
+
+        original_mesh_shape[1:] = ici_shape
+
+    updated_mesh_shape = tuple(original_mesh_shape)
+
+    logging.info("[!] Dynamically updating logical mesh_shape from %s to %s", cfg.mesh_shape, updated_mesh_shape)
+
+    devices_mesh = utils.create_device_mesh(mesh_shape=updated_mesh_shape, devices=live_devs)
+    mesh = jax.sharding.Mesh(devices_mesh, cfg.mesh_axis_names)
+    fresh_trainer._mesh = mesh
+
+    state_restored = False
+    snapshot_mgr = use_python_vars.get("snapshot_mgr")
+    if snapshot_mgr is not None:
+        with mesh:
+            try:
+                restored_trainer_state = snapshot_mgr.load_pytree()
+                fresh_trainer._trainer_state = restored_trainer_state
+                logging.info("Successfully restored state from snapshot onto the new mesh.")
+                state_restored = True
+            except Exception as e:
+                logging.warning("Failed to load from snapshot: %s.", e)
+
+    use_jax_state = jax_device_state_arg if jax_device_state_arg is not None else jax_device_state
+    if not state_restored and use_jax_state and "_trainer_state" in use_jax_state:
+        logging.info("[!] Attempting fallback: device_put trainer_state from globals onto the new mesh.")
+        try:
+            with mesh:
+                fresh_trainer._trainer_state = jax.tree_util.tree_map(
+                    lambda state, spec: jax.device_put(state, spec.sharding),
+                    use_jax_state["_trainer_state"],
+                    fresh_trainer._trainer_state_specs
+                )
+                logging.info("[✓] Successfully device_put trainer_state from globals onto the new mesh.")
+                state_restored = True
+        except Exception as e:
+            logging.warning("[!] Failed fallback to globals (possibly deleted arrays): %s", e)
+
+    if not state_restored:
+        logging.info("[!] Falling back to fresh init().")
+        fresh_trainer.init(jax.random.PRNGKey(seed=42))
+        if "_step" in use_immutable_data:
+            fresh_trainer._step = int(use_immutable_data["_step"])
+        elif "_step" in use_python_vars:
+            fresh_trainer._step = int(use_python_vars["_step"])
+
+    fresh_trainer.snapshot_mgr = snapshot_mgr
+    fresh_trainer._is_restored = True
+    fresh_trainer._compiled_train_step = None
+
+    fresh_trainer._watchdog_thread = None
+    fresh_trainer._watchdog_stopping = None
+    fresh_trainer._device_monitor = None
+    fresh_trainer._recorder = None
+
+    fresh_prng_key = jax.random.PRNGKey(seed=int(fresh_trainer.step if fresh_trainer.step is not None else 42))
+
+    try:
+        if hasattr(fresh_trainer._trainer_state, "_replace"):
+            fresh_trainer._trainer_state = fresh_trainer._trainer_state._replace(prng_key=fresh_prng_key)
+        elif isinstance(fresh_trainer._trainer_state, dict):
+            fresh_trainer._trainer_state["prng_key"] = fresh_prng_key
+        else:
+            setattr(fresh_trainer._trainer_state, "prng_key", fresh_prng_key)
+        logging.info("[✓] Successfully injected fresh, healthy PRNG Key into the new trainer state.")
+    except Exception as e:
+        logging.warning("[!] Failed to replace prng_key inside trainer_state structure: %s", e)
+
+    try:
+        leaves = jax.tree_util.tree_leaves(fresh_trainer._trainer_state)
+        deleted_count = sum(x.is_deleted() for x in leaves if isinstance(x, jax.Array))
+        mesh_match = all(x.sharding.mesh == mesh for x in leaves if isinstance(x, jax.Array) and hasattr(x, "sharding"))
+
+        logging.info(
+            "[Diagnostic] Trainer State Check: step=%s, deleted_arrays=%d, mesh_match_verified=%s",
+            int(fresh_trainer.step) if fresh_trainer.step is not None else "None",
+            deleted_count,
+            mesh_match
+        )
+    except Exception as e:
+        logging.warning("[Diagnostic] Failed to run trainer state verification: %s", e)
+
+    return fresh_trainer, fresh_prng_key
+
+def sync_store_class_vars(obj: Any) -> None:
+    """Stores instance variables of an object in global variables."""
+    if getattr(obj, "_is_restored", False):
+        return
+    
+    print("_sync_store_class_vars")
+    
+    global jax_device_state, python_vars, immutable_data
+
+    jax_device_state.clear()
+    python_vars.clear()
+    immutable_data.clear()
+
+    for k, v in obj.__dict__.items():
+        if isinstance(v, property):
+            continue
+        
+        if k in ("_trainer_state", "_mesh", "_jit_train_step", "_compiled_train_step", "model", "learner"):
+            jax_device_state[k] = v
+        elif "config" in k or "spec" in k or isinstance(v, (int, float, str, bool)):
+            immutable_data[k] = v
+        else:
+            python_vars[k] = v
+
+    #print(python_vars)
+    #print(immutable_data)
+    snapshot_mgr = python_vars.get("snapshot_mgr")
+    if snapshot_mgr is not None:
+        #print(immutable_data["_step"])
+        #print(jax_device_state["_trainer_state"])
+        try:
+            step_val = immutable_data.get("_step")
+            if step_val is None:
+                step_val = python_vars.get("_step")
+            snapshot_mgr.save_pytree(step=int(step_val) if step_val is not None else 0, state=jax_device_state["_trainer_state"])
+            snapshot_mgr.join()
+        except Exception as e:
+            logging.warning("Failed during snapshot save: %s", e)
+
+    python_vars["snapshot_mgr"] = snapshot_mgr
+
+    
 
 class TrainerState(NamedTuple):
     prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
@@ -242,6 +430,9 @@ class SpmdTrainer(Module):
         # Log the loss value every n steps. Defaults to None which is interpreted as every
         # 100 steps.
         log_every_n_steps: Optional[int] = None
+        
+
+
 
     def __init__(
         self,
@@ -268,6 +459,7 @@ class SpmdTrainer(Module):
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
         self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
+        self._class_vars = None
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -359,8 +551,10 @@ class SpmdTrainer(Module):
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
             )
-            self._trainer_state_partition_specs: TrainerState = jax.tree.map(
-                lambda spec: spec.sharding, self._trainer_state_specs
+            self._trainer_state_partition_specs: TrainerState = (
+                jax.tree.map(
+                    lambda spec: spec.sharding, self._trainer_state_specs
+                )
             )
             # Create evalers, which depend on model_param_partition_specs.
             self._evalers = {}
@@ -380,9 +574,11 @@ class SpmdTrainer(Module):
                 )
         self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
 
+        
+
     @property
     def step(self):
-        return self._step
+        return int(self._step) if self._step is not None else None
 
     @property
     def trainer_state(self):
@@ -416,7 +612,7 @@ class SpmdTrainer(Module):
             "%s process % 3d step % 8d] " + msg,
             self.path(),
             jax.process_index(),
-            -1 if self.step is None else self.step,
+            -1 if self.step is None else int(self.step),
             *args,
             **kwargs,
         )
@@ -615,6 +811,11 @@ class SpmdTrainer(Module):
                 return None
 
             self._is_initialized = True
+            #### Stores the initial state of all variables ####
+            replica_axis_idx = cfg.mesh_axis_names.index("data") if "data" in cfg.mesh_axis_names else 0
+            snapshot_cfg = config_for_class(Snapshotter).set(replica_axis_index=replica_axis_idx, trainer_state_specs=self.trainer_state_specs)
+            self.snapshot_mgr = snapshot_cfg.instantiate()
+            
 
             with self.checkpointer:
                 logging.info("Starting loop...")
@@ -625,48 +826,54 @@ class SpmdTrainer(Module):
 
                 input_iterator = self.input.batches(self._input_iter)
                 while True:
-                    self._maybe_record_event(measurement.Event.START_DATA_LOADING)
-                    try:
-                        input_batch = next(input_iterator)
-                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
-                        logging.log_first_n(
-                            logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
-                        )
-
-                        # Stop or start tracing if necessary.
-                        stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
-
-                        self._step = self._step + 1
-                        self.vlog(3, "Start step %s", self.step)
-                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                        output = self._run_step(
-                            utils.host_to_global_array(
-                                input_batch,
-                                partition=self._train_step_input_partition_specs(),
-                            ),
-                            force_run_evals=(
-                                force_run_eval_sets_at_max_step
-                                if self.step >= cfg.max_step
-                                else None
-                            ),
-                        )
-                        self.vlog(3, "Done step %s", self.step)
-                        num_steps += 1
-                        if num_steps % 100 == 0:
-                            now = time.perf_counter()
-                            average_step_time = (now - start_time) / num_steps
-                            self._step_log("Average step time: %s seconds", average_step_time)
-                            self.summary_writer(self.step, {"average_step_time": average_step_time})
-                            num_steps = 0
-                            start_time = now
-                        if self.step >= cfg.max_step:
-                            self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
-                            break
-                    except StopIteration:
-                        # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
-                        # event.
-                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
-                        break
+                        self._maybe_record_event(measurement.Event.START_DATA_LOADING)
+                        
+                        try:
+                                
+                                input_batch = next(input_iterator)
+                                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                                logging.log_first_n(
+                                    logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
+                                )
+        
+                                # Stop or start tracing if necessary.
+                                stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
+        
+                                self._step = int(self._step) + 1
+                                self.vlog(3, "Start step %s", self.step)
+                                self._maybe_record_event(measurement.Event.START_STEP, self._step)
+                                output = self._run_step(
+                                    utils.host_to_global_array(
+                                        input_batch,
+                                        partition=self._train_step_input_partition_specs(),
+                                    ),
+                                    force_run_evals=(
+                                        force_run_eval_sets_at_max_step
+                                        if self.step >= cfg.max_step
+                                        else None
+                                    ),
+                                )
+                                self.vlog(3, "Done step %s", self.step)
+                                # if self.step==3:
+                                #     _sync_store_class_vars(self)
+                                sync_store_class_vars(self)
+        
+                                num_steps += 1
+                                if num_steps % 100 == 0:
+                                    now = time.perf_counter()
+                                    average_step_time = (now - start_time) / num_steps
+                                    self._step_log("Average step time: %s seconds", average_step_time)
+                                    self.summary_writer(self.step, {"average_step_time": average_step_time})
+                                    num_steps = 0
+                                    start_time = now
+                                if self.step >= cfg.max_step:
+                                    self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                                    break
+                        except StopIteration:
+                                # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
+                                # event.
+                                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                                break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
             self._step_log("Checkpointer flushed.")
@@ -746,7 +953,7 @@ class SpmdTrainer(Module):
                 trainer_state=self.trainer_state_specs,
                 built_keys=set(),
             )
-        self._step = prebuilt_state.step
+            self._step = int(prebuilt_state.step) if prebuilt_state.step is not None else None
         all_trainer_state_keys = {key for key, _ in utils.flatten_items(self.trainer_state_specs)}
         if prebuilt_state.built_keys == all_trainer_state_keys:
             logging.info(
@@ -1022,7 +1229,7 @@ class SpmdTrainer(Module):
             if cfg.save_input_iterator:
                 ckpt_state["input_iter"] = self._input_iter
             self.checkpointer.save(
-                step=self.step, state=ckpt_state, evaler_summaries=evaler_summaries
+                step=int(self.step) if self.step is not None else 0, state=ckpt_state, evaler_summaries=evaler_summaries
             )
 
     def _restore_from_builder(self) -> Optional[TrainerStateBuilder.State]:
@@ -1075,7 +1282,7 @@ class SpmdTrainer(Module):
         cfg: SpmdTrainer.Config = self.config
         # Get device kinds and assert that they are homogenous.
         # TODO(markblee): Get devices from self._mesh.devices.
-        device_kinds = set(d.device_kind for d in jax.devices())
+        device_kinds = set(d.device_kind for d in live_devices())
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
         device_kind = device_kinds.pop()
@@ -1151,6 +1358,7 @@ class SpmdTrainer(Module):
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
         n = self._config.log_every_n_steps or 100
+        
         if self.step % n == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
@@ -1466,15 +1674,22 @@ def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
     if mem_stats is not None:
         analysis_results += "======= Memory Analysis ==================================\n"
         try:
+            # XLA may alias output buffers onto input buffers when
+            # ``donate_argnums`` is used (typical for jit'ed training steps);
+            # subtract the aliased bytes so the reported total reflects the
+            # actual peak HBM, not the double-counted argument + output sum.
+            aliased_bytes = mem_stats.alias_size_in_bytes
             total_hbm = (
                 mem_stats.argument_size_in_bytes
                 + mem_stats.output_size_in_bytes
+                - aliased_bytes
                 + mem_stats.temp_size_in_bytes
                 + mem_stats.generated_code_size_in_bytes
             )
             analysis_results += (
                 f"Input memory: {mb_or_gb(mem_stats.argument_size_in_bytes)}\n"
                 + f"Output memory: {mb_or_gb(mem_stats.output_size_in_bytes)}\n"
+                + f"Aliased input/output memory: {mb_or_gb(aliased_bytes)}\n"
                 + f"Temp memory: {mb_or_gb(mem_stats.temp_size_in_bytes)}\n"
                 + f"Code memory: {mb_or_gb(mem_stats.generated_code_size_in_bytes)}\n"
                 + f"Total HBM memory: {mb_or_gb(total_hbm)}\n"
