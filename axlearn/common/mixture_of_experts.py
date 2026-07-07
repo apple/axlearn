@@ -2000,9 +2000,13 @@ def convert_dense_to_moe_parameters(
     return target_parameters
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(3,))
+@partial(jax.custom_vjp, nondiff_argnums=(3, 4))
 def _custom_gather(
-    x: Tensor, idx: Tensor, argsort_idx: Tensor, unique_indices: bool = True
+    x: Tensor,
+    idx: Tensor,
+    argsort_idx: Tensor,
+    unique_indices: bool = True,
+    k_outermost: bool = False,
 ) -> Tensor:
     """Equivalent to `x.at[idx].get(unique_indices=unique_indices)`, but with a gather-based
     backward pass.
@@ -2015,7 +2019,8 @@ def _custom_gather(
     1. idx is unique and len(idx) == x.shape[0], i.e. idx is a permutation. In this case, the
        backward is a gather
     2. len(unique(idx)) == x.shape[0] and each value in idx has the same number of duplicates.
-       In this case, the backward is a gather followed by a reduction on the duplicates.
+       In this case, the backward is a gather followed by a reduction on the duplicates
+       (contiguous or K-outermost/strided per `k_outermost`).
 
     If `idx` doesn't follow above cases, the behavior of this function is undefined.
 
@@ -2026,21 +2031,26 @@ def _custom_gather(
         idx: A tensor of shape [S x K], where K is the number of duplicates of each index.
         argsort_idx: A tensor of shape [S x K] that's equal to jnp.argsort(idx).
         unique_indices: True if K == 1, False otherwise.
+        k_outermost: Layout of the K duplicates of each index (only used when K > 1). False
+            (default): the K copies of index i are contiguous in argsort(idx) order (K-innermost),
+            reduced with reshape(-1, K).sum(1). True: the K copies are strided by x.shape[0] (idx
+            laid out K-outermost, i.e. flatten of [K, S]), reduced with reshape(K, -1).sum(0).
 
     Returns:
         A tensor of shape [S x K, ...]
     """
-    return _custom_gather_fwd(x, idx, argsort_idx, unique_indices)[0]
+    return _custom_gather_fwd(x, idx, argsort_idx, unique_indices, k_outermost)[0]
 
 
 def _custom_gather_fwd(
-    x: Tensor, idx: Tensor, argsort_idx: Tensor, unique_indices: bool
+    x: Tensor, idx: Tensor, argsort_idx: Tensor, unique_indices: bool, k_outermost: bool
 ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+    del k_outermost  # nondiff; used in the backward only.
     return x.at[idx].get(unique_indices=unique_indices), (argsort_idx, x)
 
 
 def _custom_gather_bwd(
-    unique_indices: bool, res: tuple[Tensor, Tensor], g: Tensor
+    unique_indices: bool, k_outermost: bool, res: tuple[Tensor, Tensor], g: Tensor
 ) -> tuple[Tensor, None, None]:
     del unique_indices
     argsort_idx, x = res
@@ -2050,7 +2060,12 @@ def _custom_gather_bwd(
     out = g.at[argsort_idx].get(unique_indices=True)
     if reduction_dim == 1:
         return out, None, None
-    out = out.reshape(-1, reduction_dim, *out.shape[1:]).sum(1)
+    if k_outermost:
+        # Duplicates of each index are strided by x.shape[0] (idx laid out K-outermost).
+        out = out.reshape(reduction_dim, -1, *out.shape[1:]).sum(0)
+    else:
+        # Duplicates of each index are contiguous.
+        out = out.reshape(-1, reduction_dim, *out.shape[1:]).sum(1)
     assert out.shape == x.shape
     return out, None, None
 
@@ -2596,7 +2611,8 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         emh_gather_axes = _drop_manual_axes(cfg.dim_to_mesh_axis_map["emh"][1])
         ehm_gather_axes = _drop_manual_axes(cfg.dim_to_mesh_axis_map["ehm"][2])
         bsm_out_spec = manual_axes_to_none(cfg.output_dim_to_partition_spec["bsm"])
-        bskm_out_spec = PartitionSpec(*bsm_out_spec[:2], None, bsm_out_spec[2])
+        # [K, B, S, M']: K unsharded (None) at the front (K-outermost combine layout).
+        kbsm_out_spec = PartitionSpec(None, *bsm_out_spec[:2], bsm_out_spec[2])
 
         mesh = thread_resources.env.physical_mesh
 
@@ -2615,7 +2631,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
                 manual_axes_to_none(cfg.dim_to_mesh_axis_map["ehm"]),
             ),
             out_specs=(
-                bskm_out_spec,
+                kbsm_out_spec,
                 *self._additional_shmap_output_sharding(mesh),
             ),
             # Disables a checking pass which jax can't apply when there's a triton | pallas
@@ -2661,14 +2677,22 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             else:
                 wo = wo_sharded
 
-            # Sort tokens by expert assignment.
-            gate_assignment = gate_assignment.reshape((-1))  # [B' x S' x K]
+            # Sort tokens by expert assignment. Flatten K-outermost (k, b, s) so the un-sorted
+            # output is naturally [K, B', S', M'] and the combine reduces over K as a block-add
+            # (T(8,128)) instead of a [B,S,K,M'] axis=-2 reduction (T(2,128) re-layout). Each
+            # token's K entries are strided by B'*S' here, so the dispatch gather's backward
+            # uses k_outermost=True.
+            gate_assignment = jnp.transpose(gate_assignment, (2, 0, 1)).reshape((-1))  # [K*B'*S']
             sorted_indices = jnp.argsort(gate_assignment)
-            token_indices = sorted_indices // num_experts_per_token
+            token_indices = sorted_indices % (B * S)
             combine_indices = jnp.argsort(sorted_indices)
-            # [B' x S' x K, M]
+            # [K x B' x S', M]
             sorted_inputs = _custom_gather(
-                x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
+                x.reshape(-1, M),
+                token_indices,
+                combine_indices,
+                unique_indices=False,
+                k_outermost=True,
             )
             tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
 
@@ -2703,8 +2727,8 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             # [B' x S' x K, M']
             sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
             unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
-            # [B', S', K, M']
-            output = unsorted_output.reshape(B, S, num_experts_per_token, unsorted_output.shape[-1])
+            # [K, B', S', M'] (K-outermost)
+            output = unsorted_output.reshape(num_experts_per_token, B, S, unsorted_output.shape[-1])
             return output, *additional_outputs
 
         out, *additional_outputs = wrapper(
@@ -2718,11 +2742,12 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
         # Apply expert weights outside shard_map: keeps the extra [B, S, K] tensor off the
         # boundary (would otherwise be saved as a residual and recomputed in backward).
-        # out: [B, S, K, M'], expert_weights: [B, S, K]
-        out *= expert_weights[..., None]
+        # Fuse the weighted reduce-over-K: out [K,B,S,M'] x expert_weights [B,S,K] -> [B,S,M'],
+        # a block-add over the outer K (T(8,128)), no explicit expert_weights transpose.
         assert expert_weights.dtype == jnp.float32
-        assert out.dtype == jnp.float32
-        out = jnp.sum(out, axis=-2).astype(x.dtype)  # [B, S, M']
+        # out (gmm output) may be bf16; upcast so the reduce accumulates in float32, not bf16
+        # (the old `out *= expert_weights[..., None]; sum(axis=-2)` promoted out to f32). [B, S, M']
+        out = jnp.einsum("kbsm,bsk->bsm", out.astype(jnp.float32), expert_weights).astype(x.dtype)
         return out
 
 
