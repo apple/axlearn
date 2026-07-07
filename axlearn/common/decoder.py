@@ -499,6 +499,13 @@ class Decoder(BaseLayer):
             None,
             "model",
         )
+        # Partition spec for the pre-matmul `logits_x` activation (not the final logits
+        # output, which always uses `logits_partition_spec`). Defaults to None, which reuses
+        # `logits_partition_spec`; set explicitly -- it takes precedence -- when hidden-dim
+        # sharding should differ, e.g. to match the embedding/lm_head weight's sharding.
+        hidden_state_partition_spec: Optional[
+            tuple[Union[Optional[str], tuple[Optional[str]]], ...]
+        ] = None
         # Precision dtype for logits computation.
         # if None, uses the input dtype as default for logits computation.
         logits_forward_dtype: Optional[jnp.dtype] = None
@@ -618,7 +625,10 @@ class Decoder(BaseLayer):
             )
             # Shard hidden states before the logit matmul to prevent XLA from
             # materializing the full [batch, seq, vocab] tensor.
-            logits_x = maybe_shard(logits_x, self.config.logits_partition_spec)
+            spec = self.config.hidden_state_partition_spec
+            logits_x = maybe_shard(
+                logits_x, spec if spec is not None else self.config.logits_partition_spec
+            )
             if "lm_head" in self.children:
                 logits = self.lm_head(logits_x)
             else:
