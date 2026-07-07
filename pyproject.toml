@@ -94,6 +94,7 @@ gcp = [
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
     "tpu-info==0.2.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
     "prometheus-client==0.21.0", # For TPU monitoring from tpu-device-plugin.
+    "google-cloud-mldiagnostics", # For ML Diagnostics run logging.
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.

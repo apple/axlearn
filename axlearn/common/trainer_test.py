@@ -1258,6 +1258,128 @@ class TrainerTest(test_utils.TestCase):
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         self.assertEqual(partition_spec, trainer.input.partition_spec)
 
+    def test_ml_diagnostics_xprof_tracing(self):
+        from unittest import mock
+        from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics, MLDiagnosticsConfig
+        ManagedMLDiagnostics._instance = None
+
+        cfg = self._trainer_config()
+        cfg.ml_diagnostics = MLDiagnosticsConfig(
+            enable=True,
+            run_name="test_run",
+            region="us-central1",
+            gcs_path="gs://test/profiles",
+        )
+        cfg.start_trace_steps = [2]
+        cfg.n_steps_for_each_trace = 2
+
+        mock_xprof_module = mock.MagicMock()
+        mock_xprof_class = mock_xprof_module.xprof
+        mock_xprof_inst = mock_xprof_class.return_value
+
+        with mock.patch.dict("sys.modules", {"google_cloud_mldiagnostics": mock_xprof_module}):
+            trainer = cfg.instantiate(parent=None)
+            self.assertTrue(trainer._enable_ml_diagnostics)
+
+            # Initially, tracing is idle.
+            stop_trace_step = None
+
+            # 1. At step 1: not in start_trace_steps.
+            trainer._step = 1
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            self.assertIsNone(stop_trace_step)
+            mock_xprof_inst.start.assert_not_called()
+
+            # 2. At step 2: start trace (since 2 is in start_trace_steps).
+            trainer._step = 2
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            # stop_trace_step should be set to 2 + 2 = 4.
+            self.assertEqual(stop_trace_step, 4)
+            mock_xprof_inst.start.assert_called_once()
+            mock_xprof_inst.stop.assert_not_called()
+
+            # 3. At step 3: tracing is active, but not at stop step.
+            trainer._step = 3
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            self.assertEqual(stop_trace_step, 4)  # remains unchanged.
+            mock_xprof_inst.stop.assert_not_called()
+
+            # 4. At step 4: stop trace.
+            import jax.numpy as jnp
+            trainer._step = 4
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(
+                stop_trace_step, output={"loss": jnp.array(1.0)}
+            )
+            self.assertIsNone(stop_trace_step)
+            mock_xprof_inst.stop.assert_called_once()
+
+    def test_ml_diagnostics_writer_injection(self):
+        from unittest import mock
+        from axlearn.common.managed_mldiagnostics import MLDiagnosticsConfig
+        from axlearn.common.summary_writer import CompositeWriter, MLDiagnosticsMetricsWriter, SummaryWriter
+
+        # Reset singleton to avoid leakage
+        from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics
+        ManagedMLDiagnostics._instance = None
+
+        cfg = self._trainer_config()
+        cfg.ml_diagnostics = MLDiagnosticsConfig(
+            enable=True,
+            run_name="test_run",
+            region="us-central1",
+            gcs_path="gs://test/profiles",
+        )
+
+        # 1. Test case where original summary writer is a simple SummaryWriter
+        self.assertTrue(issubclass(cfg.summary_writer.klass, SummaryWriter))
+        self.assertTrue(issubclass(cfg.evalers["eval_dummy"].summary_writer.klass, SummaryWriter))
+
+        mock_xprof_module = mock.MagicMock()
+        with mock.patch.dict("sys.modules", {"google_cloud_mldiagnostics": mock_xprof_module}):
+            trainer = cfg.instantiate(parent=None)
+
+        # Verify that trainer's summary writer is wrapped in CompositeWriter
+        self.assertIsInstance(trainer.summary_writer, CompositeWriter)
+        self.assertIn("tb", trainer.summary_writer.children)
+        self.assertIn("mldiag", trainer.summary_writer.children)
+        self.assertIsInstance(trainer.summary_writer.children["mldiag"], MLDiagnosticsMetricsWriter)
+
+        # Verify that evaler's summary writer is wrapped in CompositeWriter
+        evaler = trainer._evalers["eval_dummy"]
+        self.assertIsInstance(evaler.summary_writer, CompositeWriter)
+        self.assertIn("tb", evaler.summary_writer.children)
+        self.assertIn("mldiag", evaler.summary_writer.children)
+        self.assertIsInstance(evaler.summary_writer.children["mldiag"], MLDiagnosticsMetricsWriter)
+        self.assertEqual(evaler.config.ml_diagnostics, cfg.ml_diagnostics)
+
+        # 2. Test case where original summary writer is already a CompositeWriter
+        ManagedMLDiagnostics._instance = None
+        cfg = self._trainer_config()
+        cfg.ml_diagnostics = MLDiagnosticsConfig(
+            enable=True,
+            run_name="test_run",
+            region="us-central1",
+            gcs_path="gs://test/profiles",
+        )
+        cfg.summary_writer = CompositeWriter.default_config().set(
+            writers={"tb": SummaryWriter.default_config()}
+        )
+        cfg.evalers["eval_dummy"].summary_writer = CompositeWriter.default_config().set(
+            writers={"tb": SummaryWriter.default_config()}
+        )
+
+        with mock.patch.dict("sys.modules", {"google_cloud_mldiagnostics": mock_xprof_module}):
+            trainer = cfg.instantiate(parent=None)
+
+        self.assertIsInstance(trainer.summary_writer, CompositeWriter)
+        self.assertIn("tb", trainer.summary_writer.children)
+        self.assertIn("mldiag", trainer.summary_writer.children)
+
+        evaler = trainer._evalers["eval_dummy"]
+        self.assertIsInstance(evaler.summary_writer, CompositeWriter)
+        self.assertIn("tb", evaler.summary_writer.children)
+        self.assertIn("mldiag", evaler.summary_writer.children)
+
 
 class SelectMeshConfigTest(test_utils.TestCase):
     def test_select_mesh_config(self):
