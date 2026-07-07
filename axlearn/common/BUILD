@@ -707,6 +707,7 @@ py_library(
         ":input_base",
         ":metrics",
         ":module",
+        ":managed_mldiagnostics",
         ":summary_writer",
         ":utils",
         "@axlearn_pip//absl_py",
@@ -1171,6 +1172,7 @@ py_library(
     deps = [
         ":config",
         ":file_system",
+        ":managed_mldiagnostics",
         ":module",
         ":summary",
         ":utils",
@@ -1206,6 +1208,7 @@ py_library(
         ":file_system",
         ":input_base",
         ":learner",
+        ":managed_mldiagnostics",
         ":measurement",
         ":module",
         ":optimizer_base",
@@ -2130,6 +2133,7 @@ py_library(
         ":config",
         ":evaler",
         ":file_system",
+        ":managed_mldiagnostics",
         ":inference_output",
         ":input_base",
         ":layers",
@@ -3476,3 +3480,22 @@ py_test(
         "@axlearn_pip//numpy",
     ],
 )
+
+py_library(
+    name = "managed_mldiagnostics",
+    srcs = ["managed_mldiagnostics.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@axlearn_pip//absl_py",
+    ],
+)
+
+py_test(
+    name = "managed_mldiagnostics_test",
+    srcs = ["managed_mldiagnostics_test.py"],
+    deps = [
+        ":managed_mldiagnostics",
+        "@axlearn_pip//absl_py",
+    ],
+)
+

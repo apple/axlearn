@@ -200,6 +200,57 @@ class GetTrainerConfigTest(TestCase):
             # Verify that the pre-existing value was not overridden
             self.assertEqual(cfg.crash_on_hang_timeout_seconds, 5000)
 
+    def test_ml_diagnostics_config(self):
+        """Test that ml_diagnostics config is properly set when enable_ml_diagnostics is True."""
+        from axlearn.common.summary_writer import SummaryWriter
+        from axlearn.common.evaler import SpmdEvaler
+
+        mock_trainer_config = mock.MagicMock()
+        mock_trainer_config.crash_on_hang_timeout_seconds = None
+        mock_trainer_config.watchdog_timeout_seconds = None
+        mock_trainer_config.dir = "/tmp/trainer"
+        mock_trainer_config.mesh_axis_names = None
+        mock_trainer_config.mesh_shape = None
+        mock_trainer_config.summary_writer = SummaryWriter.default_config()
+
+        mock_evaler = SpmdEvaler.default_config()
+        mock_trainer_config.evalers = {"eval_test": mock_evaler}
+        mock_trainer_config.checkpointer = mock.MagicMock()
+        mock_trainer_config.checkpointer.trainer_dir = None
+
+        flag_values = {
+            "config": "config",
+            "config_module": "local_module",
+            "trainer_dir": "/tmp/trainer",
+            "enable_ml_diagnostics": True,
+            "ml_diagnostics_run_name": "test_run",
+            "ml_diagnostics_region": "us-central1",
+            "trainer_crash_on_hang_timeout_seconds": 9000,
+            "trainer_watchdog_timeout_seconds": 3600,
+            "trace_at_steps": [],
+            "eval_trace_at_iters": [],
+            "device_monitor": "none",
+            "mesh_selector": None,
+        }
+        fv = _flag_values_from_dict(flag_values)
+
+        def trainer_config_fn():
+            return mock_trainer_config
+
+        with mock.patch(
+            f"{launch_trainer.__name__}.get_named_trainer_config",
+            side_effect=_mock_get_named_trainer_config,
+        ):
+            cfg = launch_trainer.get_trainer_config(
+                flag_values=fv, trainer_config_fn=trainer_config_fn
+            )
+
+            # Verify that ml_diagnostics is configured on the trainer itself (for profiling)
+            self.assertTrue(cfg.ml_diagnostics.enable)
+            self.assertEqual(cfg.ml_diagnostics.run_name, "test_run")
+            self.assertEqual(cfg.ml_diagnostics.region, "us-central1")
+            self.assertEqual(cfg.ml_diagnostics.gcs_path, "/tmp/trainer/profiles")
+
 
 if __name__ == "__main__":
     import sys
