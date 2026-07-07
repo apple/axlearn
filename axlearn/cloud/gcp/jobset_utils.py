@@ -861,6 +861,9 @@ class TPUJobBuilder(SingleReplicatedJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
         annotations["axlearn/main-container"] = cfg.name
+        if cfg.command and ("enable_ml_diagnostics_metrics=True" in cfg.command or "enable_ml_diagnostics_xprof=True" in cfg.command):
+            labels["managed-mldiagnostics-gke"] = "true"
+
 
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
@@ -1163,6 +1166,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
 
         # These are common across all GPUReplicatedJobs, used for connecting between replicas
         env_vars: dict[str, Nested[str]] = {}
+        env_vars["AXLEARN_JOB_NAME"] = cfg.name
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-{cfg.job_name}-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 

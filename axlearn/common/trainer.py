@@ -50,6 +50,7 @@ from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
+from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics, MLDiagnosticsConfig
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import (
@@ -227,6 +228,9 @@ class SpmdTrainer(Module):
         # An optional recorder for measuring common metrics like step time.
         recorder: Optional[InstantiableConfig[measurement.Recorder]] = None
 
+        # Configuration for ML Diagnostics.
+        ml_diagnostics: Optional[MLDiagnosticsConfig] = None
+
         # An additional context manager to run the training loop and initialization inside of.
         # The provided config should instantiate to a thunk that returns the context manager.
         context_manager: Optional[ConfigOr[Callable[[], ContextManager]]] = None
@@ -319,6 +323,17 @@ class SpmdTrainer(Module):
                 xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
         self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
         self._compiled_train_step: Optional[jax.stages.Compiled] = None
+        from axlearn.common.managed_mldiagnostics import (
+            is_ml_diagnostics_metrics_enabled,
+            is_ml_diagnostics_xprof_enabled,
+        )
+        self._enable_ml_diagnostics_metrics: bool = is_ml_diagnostics_metrics_enabled(
+            cfg.ml_diagnostics
+        )
+        self._enable_ml_diagnostics_xprof: bool = is_ml_diagnostics_xprof_enabled(
+            cfg.ml_diagnostics
+        )
+
 
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
@@ -335,7 +350,11 @@ class SpmdTrainer(Module):
             cfg.summary_writer.dir = cfg.summary_writer.dir or os.path.join(
                 cfg.dir, "summaries", "train_train"
             )
-            self._add_child("summary_writer", cfg.summary_writer)
+            writer_cfg = cfg.summary_writer
+            if self._enable_ml_diagnostics_metrics:
+                from axlearn.common.summary_writer import inject_mldiagnostics_writer
+                writer_cfg = inject_mldiagnostics_writer(writer_cfg, cfg.ml_diagnostics)
+            self._add_child("summary_writer", writer_cfg)
             self._add_child("model", cfg.model)
             self._add_child("learner", cfg.learner)
             cfg.checkpointer.dir = cfg.checkpointer.dir or os.path.join(cfg.dir, "checkpoints")
@@ -372,6 +391,8 @@ class SpmdTrainer(Module):
                     maybe_set_config(
                         evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
                     )
+                if self._enable_ml_diagnostics_metrics or self._enable_ml_diagnostics_xprof:
+                    evaler_cfg.ml_diagnostics = cfg.ml_diagnostics
                 self._evalers[evaler_name] = self._add_child(
                     evaler_name,
                     evaler_cfg,
@@ -1358,7 +1379,10 @@ class SpmdTrainer(Module):
         if self.step == stop_trace_step:
             assert output is not None
             jax.tree.map(lambda x: x.block_until_ready(), output)
-            jax.profiler.stop_trace()
+            if self._enable_ml_diagnostics_xprof:
+                ManagedMLDiagnostics().stop_xprof()
+            else:
+                jax.profiler.stop_trace()
             self._step_log("Stopped profiler tracing")
             updated_stop_trace_step = None
 
@@ -1380,18 +1404,21 @@ class SpmdTrainer(Module):
             )
         if should_start_tracing:
             self._step_log("Start profiler tracing")
-            profiler_options = jax.profiler.ProfileOptions()
-            if cfg.host_tracer_level is not None:
-                profiler_options.host_tracer_level = cfg.host_tracer_level
-            if cfg.device_tracer_level is not None:
-                profiler_options.device_tracer_level = cfg.device_tracer_level
-            if cfg.python_tracer_level is not None:
-                profiler_options.python_tracer_level = cfg.python_tracer_level
-            if cfg.tpu_trace_mode is not None:
-                profiler_options.advanced_configuration = {"tpu_trace_mode": cfg.tpu_trace_mode}
-            jax.profiler.start_trace(
-                self.summary_writer.config.dir, profiler_options=profiler_options
-            )
+            if self._enable_ml_diagnostics_xprof:
+                ManagedMLDiagnostics().start_xprof()
+            else:
+                profiler_options = jax.profiler.ProfileOptions()
+                if cfg.host_tracer_level is not None:
+                    profiler_options.host_tracer_level = cfg.host_tracer_level
+                if cfg.device_tracer_level is not None:
+                    profiler_options.device_tracer_level = cfg.device_tracer_level
+                if cfg.python_tracer_level is not None:
+                    profiler_options.python_tracer_level = cfg.python_tracer_level
+                if cfg.tpu_trace_mode is not None:
+                    profiler_options.advanced_configuration = {"tpu_trace_mode": cfg.tpu_trace_mode}
+                jax.profiler.start_trace(
+                    self.summary_writer.config.dir, profiler_options=profiler_options
+                )
             updated_stop_trace_step = self.step + (
                 cfg.n_steps_for_each_trace if cfg.n_steps_for_each_trace is not None else 3
             )

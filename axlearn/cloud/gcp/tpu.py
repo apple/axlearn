@@ -14,6 +14,7 @@ from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 def get_default_env(*, tpu_type: str, num_tpu_slices: int, job_name: str) -> dict[str, Any]:
     """Gets the default environment for TPU pods."""
     return dict(
+        AXLEARN_JOB_NAME=job_name,
         # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
         GCS_RESOLVE_REFRESH_SECS=600,
         TPU_TYPE=tpu_type,

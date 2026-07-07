@@ -787,6 +787,28 @@ class TPUReplicatedJobTest(TestCase):
         self.assertEqual(m.size_gb, 500)
         self.assertEqual(m.read_only, False)
 
+    def test_mldiagnostics_label(self):
+        cases = [
+            ("python3 -m trainer --enable_ml_diagnostics_metrics=True", True),
+            ("python3 -m trainer --enable_ml_diagnostics_xprof=True", True),
+            ("python3 -m trainer --enable_ml_diagnostics_metrics=True --enable_ml_diagnostics_xprof=True", True),
+            ("python3 -m trainer --enable_ml_diagnostics_metrics=False", False),
+            ("python3 -m trainer", False),
+        ]
+        for command, expected in cases:
+            with self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, bundler_cfg):
+                cfg.set(
+                    command=command,
+                    output_dir="FAKE",
+                )
+                job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+                pod = job._build_pod()  # pylint: disable=protected-access
+                labels = pod["metadata"]["labels"]
+                if expected:
+                    self.assertEqual(labels.get("managed-mldiagnostics-gke"), "true")
+                else:
+                    self.assertNotIn("managed-mldiagnostics-gke", labels)
+
 
 class CompositeReplicatedJobTest(TestCase):
     def test_composite_replicated_job(self):

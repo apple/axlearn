@@ -13,6 +13,7 @@ from axlearn.common import file_system as fs
 from axlearn.common import measurement
 from axlearn.common.config import TrainerConfigFn, get_named_trainer_config
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common.managed_mldiagnostics import MLDiagnosticsConfig
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
 
 # Trainer-specific flags.
@@ -113,6 +114,22 @@ flags.DEFINE_string(
     None,
     "The mesh selector string. See `SpmdTrainer.Config.mesh_rules` for details.",
 )
+flags.DEFINE_bool(
+    "enable_ml_diagnostics_xprof",
+    False,
+    "Whether to enable Google Cloud ML Diagnostics automated profiler (xprof) capture.",
+)
+flags.DEFINE_bool(
+    "enable_ml_diagnostics_metrics",
+    False,
+    "Whether to enable Google Cloud ML Diagnostics metrics collection.",
+)
+
+flags.DEFINE_string(
+    "ml_diagnostics_region",
+    None,
+    "Google Cloud region for ML Diagnostics.",
+)
 
 FLAGS = flags.FLAGS
 
@@ -170,6 +187,13 @@ def get_trainer_config(
         )
     if trainer_config.log_every_n_steps is None:
         trainer_config.log_every_n_steps = flag_values.trainer_log_every_n_steps
+    trainer_config.ml_diagnostics = MLDiagnosticsConfig(
+        enable_xprof=flag_values.enable_ml_diagnostics_xprof,
+        enable_metrics=flag_values.enable_ml_diagnostics_metrics,
+        region=flag_values.ml_diagnostics_region,
+        gcs_path=f"{trainer_config.dir}/profiles",
+    )
+
     for eval_cfg in trainer_config.evalers.values():
         eval_cfg.trace_at_iters = [int(el) for el in flag_values.eval_trace_at_iters]
     if flag_values.device_monitor == "tpu":
@@ -187,6 +211,7 @@ def get_trainer_config(
         if not isinstance(trainer_config.checkpointer.trainer_dir, str):
             trainer_config.checkpointer.trainer_dir = trainer_config.dir
     return trainer_config
+
 
 
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:

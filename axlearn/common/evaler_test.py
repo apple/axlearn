@@ -493,6 +493,68 @@ class EvalerTest(TestCase):
             )
             self.assertIsNotNone(summaries)
 
+    def test_ml_diagnostics_xprof_tracing(self):
+        from unittest import mock
+        from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics, MLDiagnosticsConfig
+        ManagedMLDiagnostics._instance = None
+
+        mesh = jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model"))
+        with mesh:
+            # Create model state.
+            model_cfg = DummyModel.default_config()
+            model = model_cfg.instantiate(parent=None)
+            model_param_partition_specs = jax.tree.map(
+                lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
+            )
+            model_state = pjit(
+                model.initialize_parameters_recursively,
+                in_shardings=(None,),
+                out_shardings=model_param_partition_specs,
+            )(jax.random.PRNGKey(0))
+
+            mock_xprof_module = mock.MagicMock()
+            mock_xprof_class = mock_xprof_module.xprof
+            mock_xprof_inst = mock_xprof_class.return_value
+
+            with mock.patch.dict("sys.modules", {"google_cloud_mldiagnostics": mock_xprof_module}), mock.patch.dict(os.environ, {"AXLEARN_JOB_NAME": "test_run"}):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    evaler = (
+                        SpmdEvaler.default_config()
+                        .set(
+                            input=DummyInput.default_config().set(
+                                total_num_batches=3, batch_size=4
+                            ),
+                            name="spmd_evaler",
+                            summary_writer=SummaryWriter.default_config().set(dir=temp_dir),
+                            metric_calculator=DummyMetricCalculator.default_config(),
+                            ml_diagnostics=MLDiagnosticsConfig(
+                                enable_xprof=True,
+                                enable_metrics=True,
+                                region="us-central1",
+                                gcs_path="gs://test/profiles",
+                            ),
+                            trace_at_iters=[1],
+                        )
+                        .instantiate(
+                            parent=None,
+                            model=model,
+                            model_param_partition_specs=model_param_partition_specs,
+                        )
+                    )
+                    self.assertTrue(evaler._enable_ml_diagnostics_xprof)
+                    self.assertTrue(evaler._enable_ml_diagnostics_metrics)
+                    from axlearn.common.summary_writer import CompositeWriter, MLDiagnosticsMetricsWriter
+                    self.assertIsInstance(evaler.summary_writer, CompositeWriter)
+                    self.assertIn("tb", evaler.summary_writer.children)
+                    self.assertIn("mldiag", evaler.summary_writer.children)
+                    self.assertIsInstance(evaler.summary_writer.children["mldiag"], MLDiagnosticsMetricsWriter)
+
+                    prng_key = jax.device_put(jax.random.PRNGKey(789), jax.NamedSharding(mesh, P()))
+                    evaler.eval_step(1, prng_key=prng_key, model_params=model_state)
+
+                    mock_xprof_inst.start.assert_called_once()
+                    mock_xprof_inst.stop.assert_called_once()
+
 
 class ModelSummaryAccumulatorTest(absltest.TestCase):
     def test_accumulated_summaries_match(self):

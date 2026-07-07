@@ -18,6 +18,8 @@ from tensorflow import summary as tf_summary
 from axlearn.common import file_system as fs
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
+from axlearn.common.managed_mldiagnostics import MLDiagnosticsConfig
+
 from axlearn.common.summary import AudioSummary, ImageSummary, Summary
 from axlearn.common.utils import Nested, NestedTensor, Tensor, tree_paths
 
@@ -598,3 +600,97 @@ class WandBWriter(BaseWriter):
             wandb.log(values, step=step)
 
         _upload(values, step)
+
+
+class MLDiagnosticsMetricsWriter(BaseWriter):
+    """Writer for Google Cloud ML Diagnostics."""
+
+    @config_class
+    class Config(BaseWriter.Config):
+        """Configures MLDiagnosticsMetricsWriter.
+
+        Attributes:
+            ml_diagnostics: Configuration for GCP ML Diagnostics.
+            write_every_n_steps: Writes summary every N steps.
+        """
+
+        dir: Optional[str] = ""
+        ml_diagnostics: Optional[MLDiagnosticsConfig] = None
+        write_every_n_steps: int = 1
+
+    def __init__(self, cfg: BaseWriter.Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg: MLDiagnosticsMetricsWriter.Config = self.config
+        from axlearn.common.managed_mldiagnostics import (
+            is_ml_diagnostics_metrics_enabled,
+            ManagedMLDiagnostics,
+        )
+
+        self._ml_diagnostics = None
+        if is_ml_diagnostics_metrics_enabled(cfg.ml_diagnostics):
+            try:
+                self._ml_diagnostics = ManagedMLDiagnostics(cfg.ml_diagnostics)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    def log_config(self, config: ConfigBase, step: int = 0):
+        pass
+
+    def __call__(self, step: int, values: dict[str, Any]) -> None:
+        if self._ml_diagnostics is None:
+            return
+        cfg: MLDiagnosticsMetricsWriter.Config = self.config
+        if step % cfg.write_every_n_steps != 0:
+            return
+
+        def write(path: str, value: jax.Array):
+            if isinstance(value, Summary):
+                raw_value = value.value()
+            else:
+                raw_value = value
+
+            self.vlog(3, "MLDiagnosticsWriter %s: %s=%s", self.path(), path, raw_value)
+
+            if isinstance(raw_value, Tensor) and not raw_value.is_fully_replicated:
+                logging.warning(
+                    "MLDiagnosticsWriter: %s: %s is not fully replicated", path, raw_value
+                )
+                return
+
+            if isinstance(raw_value, jax.Array):
+                raw_value = np.asarray(raw_value)
+
+            from axlearn.common.summary_writer import _match_summary_type
+            if _match_summary_type("Scalar", value=value, raw_value=raw_value):
+                try:
+                    self._ml_diagnostics.record_metric(path, raw_value, step)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+        def is_leaf(x):
+            return isinstance(x, Summary)
+
+        paths = tree_paths(values, separator="/", is_leaf=is_leaf)
+        jax.tree.map(write, paths, values, is_leaf=is_leaf)
+
+
+def inject_mldiagnostics_writer(
+    writer_cfg: BaseWriter.Config,
+    ml_diagnostics: MLDiagnosticsConfig,
+) -> BaseWriter.Config:
+    """Injects MLDiagnosticsMetricsWriter into a writer config, wrapping it in a CompositeWriter if needed."""
+    mldiag_writer = MLDiagnosticsMetricsWriter.default_config().set(
+        ml_diagnostics=ml_diagnostics
+    )
+    if isinstance(writer_cfg, CompositeWriter.Config):
+        writer_cfg.writers["mldiag"] = mldiag_writer
+        return writer_cfg
+    else:
+        return CompositeWriter.default_config().set(
+            dir=writer_cfg.dir,
+            writers={
+                "tb": writer_cfg,
+                "mldiag": mldiag_writer
+            }
+        )
+
