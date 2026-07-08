@@ -77,22 +77,19 @@ from axlearn.common.utils import (
     live_devices,
 )
 
-jax_device_state = {}
-python_vars = {}
-immutable_data = {}
-
 def sync_restore_class_vars(
     fresh_trainer: Any,
-    jax_device_state_arg: dict = None, python_vars_arg: dict = None, immutable_data_arg: dict = None
+    jax_device_state_arg: dict,
+    python_vars_arg: dict,
+    immutable_data_arg: dict,
 ) -> tuple[Any, Any]:
     """Restores trainer state onto a fresh SpmdTrainer instance from snapshot."""
     print("sync_restore_class_vars")
-    global jax_device_state, python_vars, immutable_data
 
-    print(immutable_data)
+    print(immutable_data_arg)
 
-    use_python_vars = python_vars_arg if python_vars_arg is not None else python_vars
-    use_immutable_data = immutable_data_arg if immutable_data_arg is not None else immutable_data
+    use_python_vars = python_vars_arg
+    use_immutable_data = immutable_data_arg
 
     for k, v in use_immutable_data.items():
         if isinstance(v, (int, float, str, bool)):
@@ -154,7 +151,7 @@ def sync_restore_class_vars(
             except Exception as e:
                 logging.warning("Failed to load from snapshot: %s.", e)
 
-    use_jax_state = jax_device_state_arg if jax_device_state_arg is not None else jax_device_state
+    use_jax_state = jax_device_state_arg
     if not state_restored and use_jax_state and "_trainer_state" in use_jax_state:
         logging.info("[!] Attempting fallback: device_put trainer_state from globals onto the new mesh.")
         try:
@@ -177,6 +174,8 @@ def sync_restore_class_vars(
         elif "_step" in use_python_vars:
             fresh_trainer._step = int(use_python_vars["_step"])
 
+    if "_input_iter" in use_python_vars:
+        fresh_trainer._input_iter = use_python_vars["_input_iter"]
     fresh_trainer.snapshot_mgr = snapshot_mgr
     fresh_trainer._is_restored = True
     fresh_trainer._compiled_train_step = None
@@ -215,36 +214,37 @@ def sync_restore_class_vars(
 
     return fresh_trainer, fresh_prng_key
 
-def sync_store_class_vars(obj: Any) -> None:
-    """Stores instance variables of an object in global variables."""
+def sync_store_class_vars(obj: Any) -> tuple[dict, dict, dict]:
+    """Stores instance variables of an object in dictionaries."""
     if getattr(obj, "_is_restored", False):
-        return
+        return (
+            getattr(obj, "_jax_device_state", {}),
+            getattr(obj, "_python_vars", {}),
+            getattr(obj, "_immutable_data", {}),
+        )
     
     print("_sync_store_class_vars")
     
-    global jax_device_state, python_vars, immutable_data
-
-    jax_device_state.clear()
-    python_vars.clear()
-    immutable_data.clear()
+    jax_device_state = {}
+    python_vars = {}
+    immutable_data = {}
 
     for k, v in obj.__dict__.items():
         if isinstance(v, property):
             continue
         
+        if k in ("_jax_device_state", "_python_vars", "_immutable_data"):
+            continue
+
         if k in ("_trainer_state", "_mesh", "_jit_train_step", "_compiled_train_step", "model", "learner"):
             jax_device_state[k] = v
         elif "config" in k or "spec" in k or isinstance(v, (int, float, str, bool)):
             immutable_data[k] = v
         else:
             python_vars[k] = v
-
-    #print(python_vars)
-    #print(immutable_data)
+    print("assigning class vars to trainer")
     snapshot_mgr = python_vars.get("snapshot_mgr")
     if snapshot_mgr is not None:
-        #print(immutable_data["_step"])
-        #print(jax_device_state["_trainer_state"])
         try:
             step_val = immutable_data.get("_step")
             if step_val is None:
@@ -253,8 +253,10 @@ def sync_store_class_vars(obj: Any) -> None:
             snapshot_mgr.join()
         except Exception as e:
             logging.warning("Failed during snapshot save: %s", e)
-
+    print("_sync_store_class_vars done")
     python_vars["snapshot_mgr"] = snapshot_mgr
+
+    return jax_device_state, python_vars, immutable_data
 
     
 
@@ -451,6 +453,9 @@ class SpmdTrainer(Module):
             )
 
         self._step: int = None
+        self._jax_device_state: dict = {}
+        self._python_vars: dict = {}
+        self._immutable_data: dict = {}
         self._trainer_state: TrainerState = None
         self._jit_train_step: jax.stages.Wrapped = None
         self._watchdog_stopping = None
@@ -856,7 +861,8 @@ class SpmdTrainer(Module):
                                 self.vlog(3, "Done step %s", self.step)
                                 # if self.step==3:
                                 #     _sync_store_class_vars(self)
-                                sync_store_class_vars(self)
+                                print("lkolluru step: ",self.step)
+                                self._jax_device_state, self._python_vars, self._immutable_data = sync_store_class_vars(self)
         
                                 num_steps += 1
                                 if num_steps % 100 == 0:
@@ -1116,7 +1122,11 @@ class SpmdTrainer(Module):
         cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
-        self.restore_checkpoint(restore_step=None)
+        if not getattr(self, "_is_restored", False):
+            self.restore_checkpoint(restore_step=None)
+        else:
+            logging.info("Skipping checkpoint restoration because state was already restored from snapshot.")
+            self._is_restored = False
 
         if self.step is None:
             # If we didn't restore from checkpoint, attempt to build initial state according
@@ -1360,9 +1370,10 @@ class SpmdTrainer(Module):
         n = self._config.log_every_n_steps or 100
         
         if self.step % n == 0 or 0 <= self.step <= 5:
+            loss_val = outputs["loss"].item() if hasattr(outputs["loss"], "item") else outputs["loss"]
             self._step_log(
                 "loss=%s aux=%s",
-                outputs["loss"],
+                loss_val,
                 jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 

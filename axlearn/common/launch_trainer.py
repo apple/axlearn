@@ -4,6 +4,7 @@
 
 import json
 import os
+import time
 from typing import Any, Optional
 
 import jax
@@ -12,8 +13,8 @@ from absl import flags, logging
 from axlearn.common import file_system as fs
 from axlearn.common import measurement
 from axlearn.common.config import TrainerConfigFn, get_named_trainer_config
-from axlearn.common.trainer import SpmdTrainer, select_mesh_config, sync_restore_class_vars, sync_store_class_vars, jax_device_state, python_vars, immutable_data
-from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape, live_devices
+from axlearn.common.trainer import SpmdTrainer, select_mesh_config, sync_restore_class_vars, sync_store_class_vars
+from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape, live_devices, set_elastic_manager
 from pathwaysutils.elastic import manager, elastic
 from pathwaysutils.debug import watchdog
 
@@ -119,7 +120,7 @@ flags.DEFINE_string(
 
 FLAGS = flags.FLAGS
 
-elastic_snapshotting_enabled = False
+elastic_snapshotting_enabled = True
 
 
 def get_trainer_config(
@@ -195,6 +196,16 @@ def get_trainer_config(
     return trainer_config
 
 
+def is_retryable_error(e: Exception) -> bool:
+    if isinstance(e, jax.errors.JaxRuntimeError):
+        err_str = str(e)
+        if elastic.is_error_due_to_slice_down(e):
+            return True
+        if "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            return True
+    return False
+
+
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
     measurement.record_event(measurement.Event.START_JOB)
     trainer_config_debug_string = trainer_config.debug_string()
@@ -215,19 +226,33 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
             )
     
     elastic_manager = None
-    if elastic_snapshotting_enabled and any(hasattr(d, "slice_index") for d in live_devices()):
-        elastic_manager = manager.Manager()
+    elastic_manager_initialized = False
 
     output = None
+    jax_device_state = {}
+    python_vars = {}
+    immutable_data = {}
+    trainer = None
     while True:
         try:
+            if not elastic_manager_initialized:
+                if elastic_snapshotting_enabled:
+                    logging.info("[Elastic] Initializing elastic manager...")
+                    elastic_manager = manager.Manager()
+                    set_elastic_manager(elastic_manager)
+                    logging.info("[Elastic] Elastic manager initialized.")
+                else:
+                    logging.info("[Elastic] Elastic snapshotting disabled or not supported (no slice_index).")
+                elastic_manager_initialized = True
+
             clean_trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
 
             if elastic_manager and elastic_manager.new_slice_event.is_set():
-                print("New slice event is set from elastic manager")
+                logging.info("[Elastic] New slice event is set. Restoring from snapshot...")
                 elastic_manager.new_slice_event.clear()
                 trainer, prng_key = sync_restore_class_vars(clean_trainer, jax_device_state, python_vars, immutable_data)
             else:
+                logging.info("[Elastic] Starting fresh trainer (no elastic recovery triggered).")
                 trainer = clean_trainer
                 prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
 
@@ -235,16 +260,16 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
             measurement.record_event(measurement.Event.END_JOB)
             break
             
-        
         except jax.errors.JaxRuntimeError as e:
-            if elastic_manager and elastic.is_error_due_to_slice_down(e):
-                # Slice Failure Recovery
-                print("Lost slice event is set from elastic manager")
-                logging.exception(
-                    "[!] Elastic event detected around step %d", immutable_data.get("_step", -1)
-                )
-                #sync_store_class_vars(trainer)
-                elastic_manager.new_slice_event.set()
+            if is_retryable_error(e):
+                logging.warning("Caught retryable error: %s. Retrying...", e)
+                if trainer is not None:
+                    jax_device_state = getattr(trainer, "_jax_device_state", {})
+                    python_vars = getattr(trainer, "_python_vars", {})
+                    immutable_data = getattr(trainer, "_immutable_data", {})
+                if elastic_manager:
+                    elastic_manager.new_slice_event.set()
+                time.sleep(10)
                 continue
             else:
                 raise e

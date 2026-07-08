@@ -288,16 +288,19 @@ class SummaryWriter(BaseWriter):
                 else:
                     raw_value = value
 
-                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
-
                 if isinstance(raw_value, Tensor) and not raw_value.is_fully_replicated:
                     logging.warning(
-                        "SummaryWriter: %s: %s is not fully replicated", path, raw_value
+                        "SummaryWriter: %s: %s is not fully replicated (shape=%s)",
+                        path,
+                        self.path(),
+                        raw_value.shape,
                     )
                     return
 
                 if isinstance(raw_value, jax.Array):
                     raw_value = np.asarray(raw_value)
+
+                self.vlog(3, "SummaryWriter %s: %s=%s", self.path(), path, raw_value)
 
                 if _match_summary_type("Image", value=value, raw_value=raw_value):
                     if self._time_to_write(step, "Image"):

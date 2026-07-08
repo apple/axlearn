@@ -2,7 +2,7 @@
 
 """Manages asynchronous backups of JAX array states to pinned host memory."""
 
-import logging
+from absl import logging
 import queue
 import threading
 from typing import Any, Optional
@@ -16,7 +16,7 @@ from pathwaysutils.experimental import split_by_mesh_axis  # pytype: disable=imp
 import jax.numpy as jnp
 from axlearn.common.utils import Nested, TensorSpec, get_current_abstract_or_physical_mesh
 
-_logger = logging.getLogger(__name__)
+_logger = logging
 
 
 class Snapshotter:

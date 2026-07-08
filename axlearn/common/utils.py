@@ -1797,7 +1797,7 @@ def create_device_mesh(
         NotImplementedError: If not all devices have the same platform.
     """
     if devices is None:
-        devices = jax.devices()
+        devices = live_devices()
     devices = np.asarray(devices)
 
     # Check if the devices are part of a multi-granule configuration.
@@ -2170,3 +2170,31 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
     raise ValueError(f"Unsupported dtype {dtype}")
+
+
+import pathwaysutils
+from pathwaysutils.elastic import manager as pathways_manager
+
+elastic_manager: Optional[pathways_manager.Manager] = None
+
+
+def set_elastic_manager(manager: Any):
+    """Sets the global elastic manager."""
+    global elastic_manager
+    elastic_manager = manager
+
+
+def live_devices():
+    device_list = jax.devices()
+    
+    if pathwaysutils.is_pathways_backend_used() and elastic_manager is not None:
+        active_devices = [
+            d for d in jax.devices() if d is not None and getattr(d, "slice_index", 0) in elastic_manager.active_slice_indices
+        ]
+        if active_devices:
+            return sorted(active_devices, key=lambda d: (getattr(d, "slice_index", 0), getattr(d, "coords", ())))
+    return device_list
+
+
+def live_slice_indices() -> set[int]:
+    return {d.slice_index for d in live_devices()}
