@@ -267,7 +267,7 @@ class HPA(FlagConfigurable):
         )
         flags.DEFINE_integer(
             "scaling_scale_up_percent",
-            100,
+            None,
             "Per-period cap on scale-up rate, as a percentage of "
             "currentReplicas. Default 100 (fleet may double each "
             "--scaling_scale_up_period_seconds).",
@@ -275,19 +275,19 @@ class HPA(FlagConfigurable):
         )
         flags.DEFINE_integer(
             "scaling_scale_up_period_seconds",
-            60,
-            "Window over which --scaling_scale_up_percent is applied.",
+            None,
+            "Window over which --scaling_scale_up_percent is applied. Default 60.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
             "scaling_scale_down_percent",
-            20,
+            None,
             "Per-period cap on scale-down rate, as a percentage of currentReplicas. Default 20.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
             "scaling_scale_down_period_seconds",
-            300,
+            None,
             "Window over which --scaling_scale_down_percent is applied. Default 300.",
             **common_kwargs,
         )
@@ -348,12 +348,22 @@ class HPA(FlagConfigurable):
         # contexts).
         cfg.min_replicas = getattr(fv, "min_replicas", None) or 1
         cfg.max_replicas = getattr(fv, "max_replicas", None) or 1
-        cfg.scale_up_stabilization_seconds = fv.scaling_scale_up_stabilization_seconds
-        cfg.scale_down_stabilization_seconds = fv.scaling_scale_down_stabilization_seconds
-        cfg.scale_up_percent = fv.scaling_scale_up_percent
-        cfg.scale_up_period_seconds = fv.scaling_scale_up_period_seconds
-        cfg.scale_down_percent = fv.scaling_scale_down_percent
-        cfg.scale_down_period_seconds = fv.scaling_scale_down_period_seconds
+        # Tuning flags default to None (see define_flags): an unset flag is
+        # omitted from the forwarded bastion command, and the Config field
+        # keeps its own default — the single source of truth. Only override
+        # when the flag was explicitly provided.
+        if fv.scaling_scale_up_stabilization_seconds is not None:
+            cfg.scale_up_stabilization_seconds = fv.scaling_scale_up_stabilization_seconds
+        if fv.scaling_scale_down_stabilization_seconds is not None:
+            cfg.scale_down_stabilization_seconds = fv.scaling_scale_down_stabilization_seconds
+        if fv.scaling_scale_up_percent is not None:
+            cfg.scale_up_percent = fv.scaling_scale_up_percent
+        if fv.scaling_scale_up_period_seconds is not None:
+            cfg.scale_up_period_seconds = fv.scaling_scale_up_period_seconds
+        if fv.scaling_scale_down_percent is not None:
+            cfg.scale_down_percent = fv.scaling_scale_down_percent
+        if fv.scaling_scale_down_period_seconds is not None:
+            cfg.scale_down_period_seconds = fv.scaling_scale_down_period_seconds
         return cfg
 
     def execute(self, *, owner: Optional[dict] = None) -> None:

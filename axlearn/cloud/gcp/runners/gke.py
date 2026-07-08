@@ -1094,22 +1094,22 @@ class LWSRunnerJob(GKEBaseRunnerJob):
         # the scale subresource does.
         flags.DEFINE_boolean(
             "scaling_metric_leader_only",
-            True,
+            None,
             "When True (default), the scale subresource's pod selector "
             "matches only LWS leader pods (worker-index=0). HPA computes "
             "per-pod metric averages over leaders only — appropriate when "
             "the autoscaling metric is emitted by leaders (e.g. pathways "
             "head). Set to False when the metric is emitted by all pods "
             "in the LWS group (or if you want HPA to consider workers in "
-            "its missing-metrics safety calculations).",
+            "its missing-metrics safety calculations). Defaults to True.",
             **common_kwargs,
         )
         flags.DEFINE_boolean(
             "scaling_metric_worker_only",
-            False,
+            None,
             "When True, the scale subresource's pod selector matches only "
             "LWS worker pods (worker-index!=0). Mutually exclusive with "
-            "--scaling_metric_leader_only.",
+            "--scaling_metric_leader_only. Defaults to False.",
             **common_kwargs,
         )
 

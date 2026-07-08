@@ -79,14 +79,14 @@ class MetricsCollection(FlagConfigurable):
         )
         flags.DEFINE_string(
             "scaling_metrics_path",
-            "/metrics",
-            "HTTP path to scrape.",
+            None,
+            "HTTP path to scrape. Default /metrics.",
             **common_kwargs,
         )
         flags.DEFINE_string(
             "scaling_metrics_interval",
-            "30s",
-            "Scrape interval.",
+            None,
+            "Scrape interval. Default 30s.",
             **common_kwargs,
         )
 
@@ -157,16 +157,16 @@ class PodMonitoring(MetricsCollection):
         # this Configurable rather than on HPA.
         flags.DEFINE_string(
             "scaling_metric_prefix",
-            "prometheus.googleapis.com",
+            None,
             "Prefix that GMP prepends to scraped Prometheus metrics. "
-            "Empty string disables the prefix.",
+            "Empty string disables the prefix. Default prometheus.googleapis.com.",
             **common_kwargs,
         )
         flags.DEFINE_string(
             "scaling_metric_kind",
-            "gauge",
+            None,
             "Suffix appended to the composed metric name. Use `counter` "
-            "for monotonic metrics. Empty string disables the suffix.",
+            "for monotonic metrics. Empty string disables the suffix. Default gauge.",
             **common_kwargs,
         )
 
@@ -187,10 +187,18 @@ class PodMonitoring(MetricsCollection):
             cfg.port = int(port_value)
         except ValueError:
             cfg.port = port_value
-        cfg.path = fv.scaling_metrics_path
-        cfg.interval = fv.scaling_metrics_interval
-        cfg.metric_name_prefix = fv.scaling_metric_prefix
-        cfg.metric_name_kind = fv.scaling_metric_kind
+        # Override only when the flag was explicitly provided (flags default to
+        # None). The Config field holds the default. `is not None` — not
+        # falsiness — so an explicit empty string (opt-out for prefix/kind)
+        # still overrides.
+        if fv.scaling_metrics_path is not None:
+            cfg.path = fv.scaling_metrics_path
+        if fv.scaling_metrics_interval is not None:
+            cfg.interval = fv.scaling_metrics_interval
+        if fv.scaling_metric_prefix is not None:
+            cfg.metric_name_prefix = fv.scaling_metric_prefix
+        if fv.scaling_metric_kind is not None:
+            cfg.metric_name_kind = fv.scaling_metric_kind
         return cfg
 
     def compose_metric_name(self, name: str) -> str:
