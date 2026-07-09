@@ -234,36 +234,41 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
     python_vars = {}
     immutable_data = {}
     trainer = None
+    logging.info("[ELASTIC] Starting elastic training loop cycle.")
     while True:
         try:
             if not elastic_manager_initialized:
                 if elastic_snapshotting_enabled:
-                    logging.info("[Elastic] Initializing elastic manager...")
+                    logging.info("[ELASTIC] Initializing elastic manager...")
                     elastic_manager = manager.Manager()
                     set_elastic_manager(elastic_manager)
-                    logging.info("[Elastic] Elastic manager initialized.")
+                    logging.info("[ELASTIC] Elastic manager initialized.")
                 else:
-                    logging.info("[Elastic] Elastic snapshotting disabled or not supported (no slice_index).")
+                    logging.info("[ELASTIC] Elastic snapshotting disabled or not supported (no slice_index).")
                 elastic_manager_initialized = True
 
             clean_trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+            logging.info("[ELASTIC] Instantiated clean trainer.")
 
             if elastic_manager and elastic_manager.new_slice_event.is_set():
-                logging.info("[Elastic] New slice event is set. Restoring from snapshot...")
+                logging.info("[ELASTIC] New slice event is set. Restoring from snapshot...")
                 elastic_manager.new_slice_event.clear()
                 trainer, prng_key = sync_restore_class_vars(clean_trainer, jax_device_state, python_vars, immutable_data)
+                logging.info("[ELASTIC] Restored trainer state from class vars.")
             else:
-                logging.info("[Elastic] Starting fresh trainer (no elastic recovery triggered).")
+                logging.info("[ELASTIC] Starting fresh trainer (no elastic recovery triggered).")
                 trainer = clean_trainer
                 prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
 
+            logging.info("[ELASTIC] Starting trainer.run().")
             output = trainer.run(prng_key)
+            logging.info("[ELASTIC] trainer.run() completed.")
             measurement.record_event(measurement.Event.END_JOB)
             break
             
         except jax.errors.JaxRuntimeError as e:
             if is_retryable_error(e):
-                logging.warning("Caught retryable error: %s. Retrying...", e)
+                logging.warning("[ELASTIC] Caught retryable error: %s. Retrying...", e)
                 if trainer is not None:
                     jax_device_state = getattr(trainer, "_jax_device_state", {})
                     python_vars = getattr(trainer, "_python_vars", {})
@@ -288,5 +293,6 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 time.sleep(10)
                 continue
             else:
+                logging.error("[ELASTIC] Caught non-retryable error: %s", e)
                 raise e
     return output

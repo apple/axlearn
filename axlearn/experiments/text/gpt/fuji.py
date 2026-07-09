@@ -403,7 +403,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=len(live_devices()),#train_batch_size,
+            train_batch_size=len(jax.devices()),#train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -441,7 +441,67 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(fsdp=32, data=-1)
+                                mesh_shape=mesh_shape_from_axes(fsdp=16, model=2, data=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=(
+                                                RematRegexSavePatterns.QKV_PROJ.value
+                                            ),
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=256),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5litepod-64",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=32, model=2, data=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=(
+                                                RematRegexSavePatterns.QKV_PROJ.value
+                                            ),
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=256),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5p-128",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=64, data=-1)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
@@ -462,6 +522,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            #FlashBlockSizeModifier.default_config().set(tpu_block_size=256),
                         ],
                     ),
                 ),

@@ -34,15 +34,15 @@ class Snapshotter:
   def _worker(self):
     while True:
       pinned_state, step = self._queue.get()
-      print("In snapshot worker")
+      _logger.info("[ELASTIC] Snapshot worker dequeued task for step %d", step)
       try:
         _logger.info(
-            "[*] [Snapshot Thread] Waiting for snapshot at step %d to be ready...",
+            "[ELASTIC] [*] [Snapshot Thread] Waiting for snapshot at step %d to be ready...",
             step,
         )
         jax.block_until_ready(pinned_state)
         _logger.info(
-            "[*] [Snapshot Thread] Snapshot at step %d is ready and secured.",
+            "[ELASTIC] [*] [Snapshot Thread] Snapshot at step %d is ready and secured.",
             step,
         )
         with self._lock:
@@ -54,30 +54,30 @@ class Snapshotter:
         except Exception:
           err_msg = f"JAX Runtime Exception of type {type(e).__name__} (suppressed tensor evaluation)"
         _logger.warning(
-            "[*] [Snapshot Thread] Failed to secure snapshot at step %d: %s.",
+            "[ELASTIC] [*] [Snapshot Thread] Failed to secure snapshot at step %d: %s.",
             step,
             err_msg,
         )
       finally:
-        print("In snapshot worker finally")
+        _logger.info("[ELASTIC] Snapshot worker finished processing step %d", step)
         self._queue.task_done()
 
   def save_pytree(
       self, step: int, state: tree_types.PyTreeOf[jax.Array]
   ) -> None:
     """Move arrays onto CPU worker devices."""
-    print("In snapshot pytree")
+    _logger.info("[ELASTIC] Starting snapshot process for step %d", step)
     if self._queue.full():
-      _logger.warning("Snapshotter busy. Skipping snapshot for step %d", step)
+      _logger.warning("[ELASTIC] Snapshotter busy. Skipping snapshot for step %d", step)
       return
 
     pinned_shardings = jax.tree.map(
         lambda x: x.sharding.with_memory_kind("pinned_host") if hasattr(x, "sharding") else None, state
     )
-    print("before jax.put")
+    _logger.info("[ELASTIC] Putting snapshot state to pinned host memory for step %d...", step)
 
     pinned_state = jax.device_put(state, pinned_shardings)
-    print("after jax.put")
+    _logger.info("[ELASTIC] Snapshot state put to pinned host memory for step %d.", step)
     self._queue.put((pinned_state, step))
 
   def load_pytree(
@@ -130,7 +130,7 @@ class Snapshotter:
           sliced_x = jnp.pad(sliced_x, pad_widths)
       return sliced_x
 
-    _logger.info("Restoring from snapshot at step %d...", step)
+    _logger.info("[ELASTIC] Restoring from snapshot at step %d...", step)
     pinned_state = jax.tree.map(get_active_pytree, pinned_state, abstract_state)
 
     # Re-shard on host to the target device mesh
@@ -138,15 +138,19 @@ class Snapshotter:
         lambda x: x.sharding.with_memory_kind("pinned_host") if hasattr(x, "sharding") else None, abstract_state
     )
 
+    _logger.info("[ELASTIC] Moving snapshot from pinned host to target host sharding...")
     host_target_state = jax.device_put(
         pinned_state, host_target_shardings
     )
+    _logger.info("[ELASTIC] Snapshot moved to target host sharding.")
 
     # Move from host back to device (TPU) memory.
+    _logger.info("[ELASTIC] Moving snapshot from host to device...")
     restored_state = jax.device_put(
         host_target_state, jax.tree.map(lambda x: x.sharding if hasattr(x, "sharding") else None, abstract_state)
     )
     jax.block_until_ready(restored_state)
+    _logger.info("[ELASTIC] Snapshot moved to device.")
 
     if reset_snapshot_state:
       with self._lock:

@@ -84,9 +84,9 @@ def sync_restore_class_vars(
     immutable_data_arg: dict,
 ) -> tuple[Any, Any]:
     """Restores trainer state onto a fresh SpmdTrainer instance from snapshot."""
-    print("sync_restore_class_vars")
+    logging.info("[ELASTIC] Restoring class variables from snapshot.")
 
-    print(immutable_data_arg)
+    logging.info("[ELASTIC] Immutable data args: %s", immutable_data_arg)
 
     use_python_vars = python_vars_arg
     use_immutable_data = immutable_data_arg
@@ -110,14 +110,14 @@ def sync_restore_class_vars(
             try:
                 restored_trainer_state = snapshot_mgr.load_pytree()
                 fresh_trainer._trainer_state = restored_trainer_state
-                logging.info("Successfully restored state from snapshot onto the new mesh.")
+                logging.info("[ELASTIC] Successfully restored state from snapshot onto the new mesh.")
                 state_restored = True
             except Exception as e:
-                logging.warning("Failed to load from snapshot: %s.", e)
+                logging.warning("[ELASTIC] Failed to load from snapshot: %s.", e)
 
     use_jax_state = jax_device_state_arg
     if not state_restored and use_jax_state and "_trainer_state" in use_jax_state:
-        logging.info("[!] Attempting fallback: device_put trainer_state from globals onto the new mesh.")
+        logging.info("[ELASTIC] [!] Attempting fallback: device_put trainer_state from globals onto the new mesh.")
         try:
             with mesh:
                 fresh_trainer._trainer_state = jax.tree_util.tree_map(
@@ -125,13 +125,13 @@ def sync_restore_class_vars(
                     use_jax_state["_trainer_state"],
                     fresh_trainer._trainer_state_specs
                 )
-                logging.info("[✓] Successfully device_put trainer_state from globals onto the new mesh.")
+                logging.info("[ELASTIC] [✓] Successfully device_put trainer_state from globals onto the new mesh.")
                 state_restored = True
         except Exception as e:
-            logging.warning("[!] Failed fallback to globals (possibly deleted arrays): %s", e)
+            logging.warning("[ELASTIC] [!] Failed fallback to globals (possibly deleted arrays): %s", e)
 
     if not state_restored:
-        logging.info("[!] Falling back to fresh init().")
+        logging.info("[ELASTIC] [!] Falling back to fresh init().")
         fresh_trainer.init(jax.random.PRNGKey(seed=42))
         if "_step" in use_immutable_data:
             fresh_trainer._step = int(use_immutable_data["_step"])
@@ -158,9 +158,9 @@ def sync_restore_class_vars(
             fresh_trainer._trainer_state["prng_key"] = fresh_prng_key
         else:
             setattr(fresh_trainer._trainer_state, "prng_key", fresh_prng_key)
-        logging.info("[✓] Successfully injected fresh, healthy PRNG Key into the new trainer state.")
+        logging.info("[ELASTIC] [✓] Successfully injected fresh, healthy PRNG Key into the new trainer state.")
     except Exception as e:
-        logging.warning("[!] Failed to replace prng_key inside trainer_state structure: %s", e)
+        logging.warning("[ELASTIC] [!] Failed to replace prng_key inside trainer_state structure: %s", e)
 
     try:
         leaves = jax.tree_util.tree_leaves(fresh_trainer._trainer_state)
@@ -187,7 +187,7 @@ def sync_store_class_vars(obj: Any) -> tuple[dict, dict, dict]:
             getattr(obj, "_immutable_data", {}),
         )
     
-    print("_sync_store_class_vars")
+    logging.info("[ELASTIC] Storing class variables for snapshot.")
     
     jax_device_state = {}
     python_vars = {}
@@ -206,7 +206,7 @@ def sync_store_class_vars(obj: Any) -> tuple[dict, dict, dict]:
             immutable_data[k] = v
         else:
             python_vars[k] = v
-    print("assigning class vars to trainer")
+    logging.info("[ELASTIC] Preparing to save snapshot.")
     snapshot_mgr = python_vars.get("snapshot_mgr")
     if snapshot_mgr is not None:
         try:
@@ -216,8 +216,8 @@ def sync_store_class_vars(obj: Any) -> tuple[dict, dict, dict]:
             snapshot_mgr.save_pytree(step=int(step_val) if step_val is not None else 0, state=jax_device_state["_trainer_state"])
             snapshot_mgr.join()
         except Exception as e:
-            logging.warning("Failed during snapshot save: %s", e)
-    print("_sync_store_class_vars done")
+            logging.warning("[ELASTIC] Failed during snapshot save: %s", e)
+    logging.info("[ELASTIC] Storing class variables done.")
     python_vars["snapshot_mgr"] = snapshot_mgr
 
     return jax_device_state, python_vars, immutable_data
@@ -851,10 +851,11 @@ class SpmdTrainer(Module):
             replica_axis_idx = cfg.mesh_axis_names.index("data") if "data" in cfg.mesh_axis_names else 0
             snapshot_cfg = config_for_class(Snapshotter).set(replica_axis_index=replica_axis_idx, trainer_state_specs=self.trainer_state_specs)
             self.snapshot_mgr = snapshot_cfg.instantiate()
+            logging.info("[ELASTIC] Snapshot manager instantiated.")
             
 
             with self.checkpointer:
-                logging.info("Starting loop...")
+                logging.info("[ELASTIC] Starting loop...")
                 start_time = time.perf_counter()
                 num_steps = 0
                 output = None
@@ -876,7 +877,8 @@ class SpmdTrainer(Module):
                                 stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
         
                                 self._step = int(self._step) + 1
-                                self.vlog(3, "Start step %s", self.step)
+                                self._step_log("[ELASTIC] Start step")
+                                logging.info("[ELASTIC] Start step %s", self.step)
                                 self._maybe_record_event(measurement.Event.START_STEP, self._step)
                                 output = self._run_step(
                                     utils.host_to_global_array(
@@ -889,10 +891,10 @@ class SpmdTrainer(Module):
                                         else None
                                     ),
                                 )
-                                self.vlog(3, "Done step %s", self.step)
+                                self._step_log("[ELASTIC] Done step")
+                                logging.info("[ELASTIC] Done step %s", self.step)
                                 # if self.step==3:
                                 #     _sync_store_class_vars(self)
-                                print("lkolluru step: ",self.step)
                                 self._jax_device_state, self._python_vars, self._immutable_data = sync_store_class_vars(self)
         
                                 num_steps += 1
@@ -907,6 +909,7 @@ class SpmdTrainer(Module):
                                     self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
                                     break
                         except StopIteration:
+                                logging.info("[ELASTIC] Reached end of input iterator.")
                                 # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
                                 # event.
                                 self._maybe_record_event(measurement.Event.END_DATA_LOADING)
