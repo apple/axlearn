@@ -101,43 +101,7 @@ def sync_restore_class_vars(
         except Exception:
             pass
 
-    live_devs = utils.live_devices()
-    logging.info("[!] Found %d available live devices.", len(live_devs))
-
-    cfg = fresh_trainer.config
-    device_platform = live_devs[0].platform
-    device_attr = "process_index" if device_platform != "tpu" else "slice_index"
-
-    num_granules = len({getattr(el, device_attr) for el in live_devs})
-    num_devices_per_granule = len(live_devs) // num_granules
-
-    original_mesh_shape = list(cfg.mesh_shape)
-    if len(original_mesh_shape) > 0:
-        original_mesh_shape[0] = num_granules
-
-        ici_shape = original_mesh_shape[1:]
-        current_ici_prod = math.prod(ici_shape)
-        if current_ici_prod != num_devices_per_granule:
-            logging.info("[!] ICI product %d does not match num_devices_per_granule %d. Adjusting...", current_ici_prod, num_devices_per_granule)
-            ratio = current_ici_prod // num_devices_per_granule
-            if ratio > 0 and current_ici_prod % num_devices_per_granule == 0:
-                for i in range(len(ici_shape)):
-                    if ici_shape[i] % ratio == 0 and ici_shape[i] > 1:
-                        ici_shape[i] = ici_shape[i] // ratio
-                        break
-            else:
-                ici_shape = [1] * len(ici_shape)
-                ici_shape[-3] = num_devices_per_granule
-
-        original_mesh_shape[1:] = ici_shape
-
-    updated_mesh_shape = tuple(original_mesh_shape)
-
-    logging.info("[!] Dynamically updating logical mesh_shape from %s to %s", cfg.mesh_shape, updated_mesh_shape)
-
-    devices_mesh = utils.create_device_mesh(mesh_shape=updated_mesh_shape, devices=live_devs)
-    mesh = jax.sharding.Mesh(devices_mesh, cfg.mesh_axis_names)
-    fresh_trainer._mesh = mesh
+    mesh = fresh_trainer._mesh
 
     state_restored = False
     snapshot_mgr = use_python_vars.get("snapshot_mgr")
@@ -495,9 +459,76 @@ class SpmdTrainer(Module):
                 len(local_devices),
                 [device.platform for device in local_devices],
             )
+        
+        live_devs = utils.live_devices() if devices is None else devices
+        device_platform = live_devs[0].platform
+        device_attr = "process_index" if device_platform != "tpu" else "slice_index"
+        num_granules = len(set(getattr(el, device_attr) for el in live_devs))
+        num_devices_per_granule = len(live_devs) // num_granules
+
+        if isinstance(cfg.mesh_shape, Sequence) and not isinstance(cfg.mesh_shape, str):
+            original_mesh_shape = list(cfg.mesh_shape)
+            if len(original_mesh_shape) > 0:
+                original_mesh_shape[0] = num_granules
+
+                ici_shape = original_mesh_shape[1:]
+                current_ici_prod = math.prod(ici_shape)
+                if current_ici_prod != num_devices_per_granule:
+                    logging.info("[!] ICI product %d does not match num_devices_per_granule %d. Adjusting...", current_ici_prod, num_devices_per_granule)
+                    ratio = current_ici_prod // num_devices_per_granule
+                    if ratio > 0 and current_ici_prod % num_devices_per_granule == 0:
+                        for i in range(len(ici_shape)):
+                            if ici_shape[i] % ratio == 0 and ici_shape[i] > 1:
+                                ici_shape[i] = ici_shape[i] // ratio
+                                break
+                    else:
+                        ici_shape = [1] * len(ici_shape)
+                        if len(ici_shape) >= 3:
+                            ici_shape[-3] = num_devices_per_granule
+                        else:
+                            ici_shape[-1] = num_devices_per_granule
+
+                original_mesh_shape[1:] = ici_shape
+
+            cfg.mesh_shape = tuple(original_mesh_shape)
+            logging.info("[!] Dynamically updating logical mesh_shape to %s", cfg.mesh_shape)
+        elif isinstance(cfg.mesh_shape, HybridMeshShape):
+            dcn_shape = list(cfg.mesh_shape.dcn_mesh_shape)
+            ici_shape = list(cfg.mesh_shape.ici_mesh_shape)
+            
+            dcn_prod = math.prod(dcn_shape)
+            if dcn_prod != num_granules:
+                ratio = dcn_prod // num_granules
+                if ratio > 0 and dcn_prod % num_granules == 0:
+                    for i in range(len(dcn_shape)):
+                        if dcn_shape[i] % ratio == 0 and dcn_shape[i] > 1:
+                            dcn_shape[i] = dcn_shape[i] // ratio
+                            break
+                else:
+                    dcn_shape = [1] * len(dcn_shape)
+                    dcn_shape[0] = num_granules
+            
+            current_ici_prod = math.prod(ici_shape)
+            if current_ici_prod != num_devices_per_granule:
+                ratio = current_ici_prod // num_devices_per_granule
+                if ratio > 0 and current_ici_prod % num_devices_per_granule == 0:
+                    for i in range(len(ici_shape)):
+                        if ici_shape[i] % ratio == 0 and ici_shape[i] > 1:
+                            ici_shape[i] = ici_shape[i] // ratio
+                            break
+                else:
+                    ici_shape = [1] * len(ici_shape)
+                    if len(ici_shape) >= 3:
+                        ici_shape[-3] = num_devices_per_granule
+                    else:
+                        ici_shape[-1] = num_devices_per_granule
+
+            cfg.mesh_shape = HybridMeshShape(ici_mesh_shape=tuple(ici_shape), dcn_mesh_shape=tuple(dcn_shape))
+            logging.info("[!] Dynamically updating HybridMeshShape to %s", cfg.mesh_shape)
+
         self._step_log("Mesh shape: %s", cfg.mesh_shape)
         devices = (
-            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
+            utils.create_device_mesh(mesh_shape=cfg.mesh_shape, devices=live_devs) if devices is None else devices
         )
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         self._step_log("Global mesh: %s", mesh)

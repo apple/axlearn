@@ -1809,7 +1809,7 @@ def create_device_mesh(
         raise NotImplementedError(f"Not all devices had platform: {device_platform}.")
 
     num_granules = (
-        max(getattr(el, device_attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
+        len(set(getattr(el, device_attr) for el in devices.flatten())) if is_multi_granule_env else 1
     )
     num_devices = len(devices)
     assert num_devices % num_granules == 0, (
@@ -2183,16 +2183,24 @@ def set_elastic_manager(manager: Any):
     global elastic_manager
     elastic_manager = manager
 
+from pathwaysutils.elastic import manager
 
 def live_devices():
     device_list = jax.devices()
-    
+    elastic_manager = manager.Manager()
+    print("lkolluru pathwaysutils.is_pathways_backend_used(): ", pathwaysutils.is_pathways_backend_used())
+    print("lkolluru elastic_manager: ", elastic_manager)
     if pathwaysutils.is_pathways_backend_used() and elastic_manager is not None:
+        import time
+        time.sleep(5)
         active_devices = [
-            d for d in jax.devices() if d is not None and getattr(d, "slice_index", 0) in elastic_manager.active_slice_indices
-        ]
+                d for d in jax.devices() if d is not None and getattr(d, "slice_index", 0) in elastic_manager.active_slice_indices
+            ]
+        print("lkolluru active_devices: ", len(active_devices))
         if active_devices:
             return sorted(active_devices, key=lambda d: (getattr(d, "slice_index", 0), getattr(d, "coords", ())))
+        logging.info("Waiting for active_slice_indices to be populated...")
+            
     return device_list
 
 
