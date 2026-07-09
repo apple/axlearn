@@ -319,6 +319,7 @@ def get_trainer_kwargs(
             mesh_shape=mesh_shape_from_axes(data=-1),
         )
     elif model_size == "1B":
+        import jax
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=16,
@@ -332,7 +333,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=len(jax.devices()), #train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -347,6 +348,36 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5litepod-32",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=32, model=1, data=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=(
+                                                RematRegexSavePatterns.QKV_PROJ.value
+                                            ),
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=256),
                         ],
                     ),
                 ),
@@ -441,7 +472,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(fsdp=16, model=2, data=-1)
+                                mesh_shape=mesh_shape_from_axes(fsdp=32, model=1, data=1)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={

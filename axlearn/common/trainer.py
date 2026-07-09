@@ -107,13 +107,17 @@ def sync_restore_class_vars(
     snapshot_mgr = use_python_vars.get("snapshot_mgr")
     if snapshot_mgr is not None:
         with mesh:
-            try:
-                restored_trainer_state = snapshot_mgr.load_pytree()
-                fresh_trainer._trainer_state = restored_trainer_state
-                logging.info("[ELASTIC] Successfully restored state from snapshot onto the new mesh.")
-                state_restored = True
-            except Exception as e:
-                logging.warning("[ELASTIC] Failed to load from snapshot: %s.", e)
+            for attempt in range(3):
+                try:
+                    restored_trainer_state = snapshot_mgr.load_pytree()
+                    fresh_trainer._trainer_state = restored_trainer_state
+                    logging.info("[ELASTIC] Successfully restored state from snapshot onto the new mesh.")
+                    state_restored = True
+                    break
+                except Exception as e:
+                    logging.warning("[ELASTIC] Failed to load from snapshot (attempt %d/3): %s.", attempt + 1, e)
+                    if attempt < 2:
+                        time.sleep(5)
 
     use_jax_state = jax_device_state_arg
     if not state_restored and use_jax_state and "_trainer_state" in use_jax_state:
@@ -165,7 +169,7 @@ def sync_restore_class_vars(
     try:
         leaves = jax.tree_util.tree_leaves(fresh_trainer._trainer_state)
         deleted_count = sum(x.is_deleted() for x in leaves if isinstance(x, jax.Array))
-        mesh_match = all(x.sharding.mesh == mesh for x in leaves if isinstance(x, jax.Array) and hasattr(x, "sharding"))
+        mesh_match = all(getattr(x.sharding, "mesh", None) == mesh for x in leaves if isinstance(x, jax.Array) and hasattr(x, "sharding"))
 
         logging.info(
             "[Diagnostic] Trainer State Check: step=%s, deleted_arrays=%d, mesh_match_verified=%s",
@@ -848,7 +852,7 @@ class SpmdTrainer(Module):
 
             self._is_initialized = True
             #### Stores the initial state of all variables ####
-            replica_axis_idx = cfg.mesh_axis_names.index("data") if "data" in cfg.mesh_axis_names else 0
+            replica_axis_idx = cfg.mesh_axis_names.index("fsdp") if "fsdp" in cfg.mesh_axis_names else 0
             snapshot_cfg = config_for_class(Snapshotter).set(replica_axis_index=replica_axis_idx, trainer_state_specs=self.trainer_state_specs)
             self.snapshot_mgr = snapshot_cfg.instantiate()
             logging.info("[ELASTIC] Snapshot manager instantiated.")
@@ -1326,23 +1330,19 @@ class SpmdTrainer(Module):
         cfg: SpmdTrainer.Config = self.config
         # Get device kinds and assert that they are homogenous.
         # TODO(markblee): Get devices from self._mesh.devices.
+        print("entered _get_compiled_train_step_fn")
         device_kinds = set(d.device_kind for d in live_devices())
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
         device_kind = device_kinds.pop()
 
-        mesh_shape = cfg.mesh_shape
-        if isinstance(mesh_shape, HybridMeshShape):
-            # Combine dcn_mesh_shape and ici_mesh_shape.
-            dcn_mesh_shape = mesh_shape.dcn_mesh_shape
-            ici_mesh_shape = mesh_shape.ici_mesh_shape
-            assert len(dcn_mesh_shape) == len(ici_mesh_shape)
-            mesh_shape = tuple(x * y for x, y in zip(dcn_mesh_shape, ici_mesh_shape))
-
+        mesh_shape = tuple(self._mesh.shape[name] for name in cfg.mesh_axis_names)
+        print("_get_compiled_train_step_fn mesh_shape", mesh_shape)
         options = infer_xla_performance_flags(
             mesh_shape=mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         logging.log_first_n(logging.INFO, "Compiler options: %s", 1, options)
+        print("options", options)
         if not with_xsc:
             self._maybe_record_event(
                 measurement.Event.START_CUSTOM_BADPUT_EVENT,
@@ -1357,6 +1357,7 @@ class SpmdTrainer(Module):
             )
             return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
+        print("Compiling XSC train step.")
 
         self._maybe_record_event(
             measurement.Event.START_CUSTOM_BADPUT_EVENT,
@@ -1374,6 +1375,7 @@ class SpmdTrainer(Module):
             measurement.Event.END_CUSTOM_BADPUT_EVENT,
             custom_badput_event_type="COMPILATION_WITH_XSC",
         )
+        print("compiled_jit_train_step_fn")
         return compiled_jit_train_step_fn
 
     def _run_step(
@@ -1393,6 +1395,7 @@ class SpmdTrainer(Module):
             force run the evalers in the set and return 'evaler_summaries' output.
         """
         logging.log_first_n(logging.INFO, "global_input_batch=%s", 3, utils.shapes(input_batch))
+        print("entered _run_step")
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             run_with_xsc = self._xsc_check_policy and self._xsc_check_policy(self.step)
             compiled_train_step_fn = self._get_compiled_train_step_fn(
