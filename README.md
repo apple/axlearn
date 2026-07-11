@@ -38,3 +38,7 @@ Please see [Concepts](docs/02-concepts.md) for more details on the core componen
 ## PyPI Release
 
 See [RELEASE.md](RELEASE.md) for PyPI release process, version management, and installation instructions.
+
+---
+
+*[Mukller](https://github.com/Mukller)*
