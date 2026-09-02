@@ -1387,6 +1387,61 @@ class TrainerTest(test_utils.TestCase):
         trainer = cfg.instantiate(parent=None)
         trainer.run(prng_key=jax.random.PRNGKey(0))
 
+    def test_ml_diagnostics_xprof_tracing(self):
+        from unittest import mock
+        from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics, MLDiagnosticsConfig
+        ManagedMLDiagnostics._instance = None
+
+        cfg = self._trainer_config()
+        cfg.ml_diagnostics = MLDiagnosticsConfig(
+            enable_xprof=True,
+            region="us-central1",
+            gcs_path="gs://test/profiles",
+        )
+        cfg.start_trace_steps = [2]
+        cfg.n_steps_for_each_trace = 2
+
+        mock_xprof_module = mock.MagicMock()
+        mock_xprof_class = mock_xprof_module.xprof
+        mock_xprof_inst = mock_xprof_class.return_value
+
+        with mock.patch.dict("sys.modules", {"google_cloud_mldiagnostics": mock_xprof_module}), mock.patch.dict(os.environ, {"AXLEARN_JOB_NAME": "test_run"}):
+            ManagedMLDiagnostics(cfg.ml_diagnostics)
+            trainer = cfg.instantiate(parent=None)
+            self.assertTrue(trainer._enable_ml_diagnostics_xprof)
+
+            # Initially, tracing is idle.
+            stop_trace_step = None
+
+            # 1. At step 1: not in start_trace_steps.
+            trainer._step = 1
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            self.assertIsNone(stop_trace_step)
+            mock_xprof_inst.start.assert_not_called()
+
+            # 2. At step 2: start trace (since 2 is in start_trace_steps).
+            trainer._step = 2
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            # stop_trace_step should be set to 2 + 2 = 4.
+            self.assertEqual(stop_trace_step, 4)
+            mock_xprof_inst.start.assert_called_once()
+            mock_xprof_inst.stop.assert_not_called()
+
+            # 3. At step 3: tracing is active, but not at stop step.
+            trainer._step = 3
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(stop_trace_step, output=None)
+            self.assertEqual(stop_trace_step, 4)  # remains unchanged.
+            mock_xprof_inst.stop.assert_not_called()
+
+            # 4. At step 4: stop trace.
+            import jax.numpy as jnp
+            trainer._step = 4
+            stop_trace_step = trainer._maybe_stop_or_start_tracing(
+                stop_trace_step, output={"loss": jnp.array(1.0)}
+            )
+            self.assertIsNone(stop_trace_step)
+            mock_xprof_inst.stop.assert_called_once()
+
 
 class SelectMeshConfigTest(test_utils.TestCase):
     def test_select_mesh_config(self):

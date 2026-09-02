@@ -19,6 +19,10 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import flax_struct, input_base, summary_writer, utils
 from axlearn.common.base_model import BaseModel
+from axlearn.common.managed_mldiagnostics import (
+    MLDiagnosticsConfig,
+    is_ml_diagnostics_xprof_enabled,
+)
 from axlearn.common.config import (
     REQUIRED,
     InstantiableConfig,
@@ -582,6 +586,8 @@ class SpmdEvaler(Module):
         metric_calculator: BaseMetricCalculator.Config = ModelSummaryAccumulator.default_config()
         # If not None, writes input batches and `metric_calculator` forward outputs.
         output_writer: Optional[BaseOutputWriter.Config] = None
+        # Configuration for ML Diagnostics.
+        ml_diagnostics: Optional[MLDiagnosticsConfig] = None
 
     def __init__(
         self,
@@ -615,6 +621,15 @@ class SpmdEvaler(Module):
 
         self._trace_steps = set()
         self._eval_policy: EvalPolicy = cfg.eval_policy.instantiate()
+        self._enable_ml_diagnostics_xprof: bool = is_ml_diagnostics_xprof_enabled(
+            cfg.ml_diagnostics
+        )
+        if self._enable_ml_diagnostics_xprof:
+            from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics
+            try:
+                ManagedMLDiagnostics(cfg.ml_diagnostics)
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     def eval_step(
         self,
@@ -691,25 +706,32 @@ class SpmdEvaler(Module):
                     "output was None at the end of a trace, not expected."
                 )
                 jax.tree.map(lambda x: x.block_until_ready(), forward_outputs)
-                jax.profiler.stop_trace()
+                if self._enable_ml_diagnostics_xprof:
+                    from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics
+                    ManagedMLDiagnostics().stop_xprof()
+                else:
+                    jax.profiler.stop_trace()
                 self.vlog(2, "Stopped profiler tracing for evaler %s.", cfg.name)
                 stop_trace_iter = None
                 self._trace_steps.add(step)
 
             if batch_ix in cfg.trace_at_iters and len(self._trace_steps) <= 3:
-                try:
-                    jax.profiler.start_trace(self.summary_writer.config.dir)
-                except RuntimeError as e:
-                    if "Only one profile may be run at a time." in str(e):
-                        # https://github.com/google/jax/blob/260f1d8b/jax/_src/profiler.py#L110-L111
-                        # No functionality is currently exposed to check this robustly.
-                        raise RuntimeError(
-                            "Nesting evaler profiling within a higher "
-                            "level profile session is not currently supported. "
-                        ) from e
-                    # Else profiler is already running.
-                finally:
-                    stop_trace_iter = batch_ix + 1  # We only look at one batch.
+                if self._enable_ml_diagnostics_xprof:
+                    from axlearn.common.managed_mldiagnostics import ManagedMLDiagnostics
+                    ManagedMLDiagnostics().start_xprof()
+                else:
+                    try:
+                        jax.profiler.start_trace(self.summary_writer.config.dir)
+                    except RuntimeError as e:
+                        if "Only one profile may be run at a time." in str(e):
+                            # https://github.com/google/jax/blob/260f1d8b/jax/_src/profiler.py#L110-L111
+                            # No functionality is currently exposed to check this robustly.
+                            raise RuntimeError(
+                                "Nesting evaler profiling within a higher "
+                                "level profile session is not currently supported. "
+                            ) from e
+                        # Else profiler is already running.
+                stop_trace_iter = batch_ix + 1  # We only look at one batch.
                 self.vlog(2, "Start profiling evaler %s", cfg.name)
 
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
