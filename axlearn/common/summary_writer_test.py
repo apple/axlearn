@@ -26,9 +26,11 @@ from axlearn.common.config import config_class
 from axlearn.common.evaler_test import DummyModel
 from axlearn.common.metrics import WeightedSummary
 from axlearn.common.summary import AudioSummary, ImageSummary
+from axlearn.common.managed_mldiagnostics import MLDiagnosticsConfig
 from axlearn.common.summary_writer import (
     CheckpointerAction,
     CompositeWriter,
+    MLDiagnosticsMetricsWriter,
     SummaryWriter,
     WandBWriter,
     _average_step_time,
@@ -150,6 +152,69 @@ class SummaryWriterTest(TestCase):
             self.assertEqual(expected, summaries)
 
 
+class MLDiagnosticsMetricsWriterTest(TestCase):
+    """Tests MLDiagnosticsMetricsWriter."""
+
+    def test_record_mldiag_metrics(self):
+        cfg = MLDiagnosticsMetricsWriter.default_config().set(
+            name="test_mldiag",
+            write_every_n_steps=2,
+            ml_diagnostics=MLDiagnosticsConfig(
+                enable_metrics=True,
+                region="us-central1",
+                gcs_path="gs://test/profiles",
+            )
+        )
+
+        mock_diagnostics_cls = mock.MagicMock()
+        mock_diagnostics_inst = mock_diagnostics_cls.return_value
+
+        with mock.patch("axlearn.common.managed_mldiagnostics.ManagedMLDiagnostics", mock_diagnostics_cls):
+            writer = cfg.instantiate(parent=None)
+            mock_diagnostics_cls.assert_called_once_with(cfg.ml_diagnostics)
+
+            # Step 1: write_every_n_steps == 2, so it shouldn't write on step 1
+            writer(
+                step=1,
+                values={
+                    "loss": WeightedSummary(mean=3, weight=16),
+                },
+            )
+            mock_diagnostics_inst.record_metric.assert_not_called()
+
+            # Step 2: write_every_n_steps == 2, so it should write
+            writer(
+                step=2,
+                values={
+                    "loss": WeightedSummary(mean=3, weight=16),
+                    "accuracy": WeightedSummary(mean=0.7, weight=16),
+                    "learner": {"learning_rate": 0.1},
+                },
+            )
+
+            expected_calls = [
+                mock.call("loss", 3.0, 2),
+                mock.call("accuracy", 0.7, 2),
+                mock.call("learner/learning_rate", 0.1, 2),
+            ]
+            actual_calls = mock_diagnostics_inst.record_metric.call_args_list
+            self.assertEqual(len(expected_calls), len(actual_calls))
+            mock_diagnostics_inst.record_metric.assert_has_calls(expected_calls, any_order=True)
+
+    def test_disabled(self):
+        cfg = MLDiagnosticsMetricsWriter.default_config().set(
+            name="test_mldiag",
+            ml_diagnostics=MLDiagnosticsConfig(enable_metrics=False)
+        )
+
+        mock_diagnostics_cls = mock.MagicMock()
+        with mock.patch("axlearn.common.managed_mldiagnostics.ManagedMLDiagnostics", mock_diagnostics_cls):
+            writer = cfg.instantiate(parent=None)
+            mock_diagnostics_cls.assert_not_called()
+
+            writer(step=1, values={"loss": 1.0})
+
+
 class CompositeWriterTest(TestCase):
     """Tests CompositeWriter."""
 
@@ -202,6 +267,37 @@ class CompositeWriterTest(TestCase):
 
             for sub_writer in writer.writers:
                 sub_writer.log_checkpoint.assert_called_once()
+
+    def test_inject_mldiagnostics_writer(self):
+        from axlearn.common.summary_writer import inject_mldiagnostics_writer
+        from axlearn.common.managed_mldiagnostics import MLDiagnosticsConfig
+
+        ml_diagnostics = MLDiagnosticsConfig(
+            enable_metrics=True,
+            region="us-central1",
+            gcs_path="gs://test/profiles",
+        )
+
+        # Case 1: Simple SummaryWriter config
+        tb_writer_cfg = SummaryWriter.default_config().set(dir="/tmp/tb")
+        injected_cfg = inject_mldiagnostics_writer(tb_writer_cfg, ml_diagnostics)
+
+        self.assertTrue(issubclass(injected_cfg.klass, CompositeWriter))
+        self.assertIn("tb", injected_cfg.writers)
+        self.assertIn("mldiag", injected_cfg.writers)
+        self.assertEqual(injected_cfg.writers["tb"].dir, "/tmp/tb")
+        self.assertEqual(injected_cfg.writers["mldiag"].ml_diagnostics, ml_diagnostics)
+
+        # Case 2: Already a CompositeWriter config
+        composite_writer_cfg = CompositeWriter.default_config().set(
+            writers={"existing_tb": tb_writer_cfg}
+        )
+        injected_cfg2 = inject_mldiagnostics_writer(composite_writer_cfg, ml_diagnostics)
+
+        self.assertTrue(issubclass(injected_cfg2.klass, CompositeWriter))
+        self.assertIn("existing_tb", injected_cfg2.writers)
+        self.assertIn("mldiag", injected_cfg2.writers)
+        self.assertEqual(injected_cfg2.writers["mldiag"].ml_diagnostics, ml_diagnostics)
 
 
 class WandBWriterTest(TestCase):
