@@ -828,7 +828,7 @@ class TopKGating(BaseGating):
             # Default softmax function already makes raw_gates normalized.
             return raw_gates
         else:
-            return raw_gates / raw_gates.sum(axis=-1, keepdims=True)
+            return raw_gates / (raw_gates.sum(axis=-1, keepdims=True) + 1e-9)
 
     def _process_logits(self, logits: Tensor) -> Tensor:
         """Converts input logits into float32, caps values, and optionally adds noise."""
@@ -953,7 +953,7 @@ class TopKGating(BaseGating):
 
         # Calculate the normalization factor for the selected experts.
         # [O, G, S, 1]
-        denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+        denom = jnp.sum(gate_weights, axis=-1, keepdims=True) + 1e-9
 
         # Reshape gate_assignment from [O, G, S, K] to [O, G, K, S] then flatten to [O, G, K*S]
         gate_assignment = jnp.swapaxes(gate_assignment, 2, 3)
@@ -1225,7 +1225,7 @@ class TopKDropFreeGating(TopKGating):
         else:
             seq_load_balance_loss = 0
         # Caculate the normalization factor.
-        denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+        denom = jnp.sum(gate_weights, axis=-1, keepdims=True) + 1e-9
         # Renormalize the gates of the selected expert.
         # [B, S, K]
         expert_weights = gate_weights / denom
@@ -1350,7 +1350,7 @@ class TopKBiasGating(TopKDropFreeGating):
                 self.add_summary("seq_load_balance_loss", seq_load_balance_loss)
             else:
                 seq_load_balance_loss = 0
-            denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+            denom = jnp.sum(gate_weights, axis=-1, keepdims=True) + 1e-9
             expert_weights = gate_weights / denom
             if cfg.routed_scaling_factor != 1:
                 expert_weights *= cfg.routed_scaling_factor
@@ -1424,7 +1424,7 @@ class TopKBiasGating(TopKDropFreeGating):
             else:
                 seq_load_balance_loss = 0
             # Caculate the normalization factor.
-            denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+            denom = jnp.sum(gate_weights, axis=-1, keepdims=True) + 1e-9
             # Renormalize the gates of the selected expert.
             # [B x S, K]
             expert_weights = gate_weights / denom

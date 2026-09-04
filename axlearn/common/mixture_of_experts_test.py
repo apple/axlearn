@@ -72,6 +72,14 @@ from axlearn.common.utils import (
 )
 
 
+def zero_score_fn():
+    def fn(logits: jnp.ndarray, axis: int = -1) -> jnp.ndarray:
+        del axis
+        return jnp.zeros_like(logits)
+
+    return fn
+
+
 # pylint: disable=no-self-use,protected-access
 class TransformerFeedForwardMoETest(TestCase):
     @parameterized.parameters(
@@ -1332,6 +1340,86 @@ class TopKGatingTest(TestCase):
         gate_0_combine_tensor = jnp.asarray(gate_0.combine_tensor).astype(jnp.float32)
         gate_1_combine_tensor = jnp.asarray(gate_1.combine_tensor).astype(jnp.float32)
         assert jnp.array_equal(gate_0_combine_tensor, gate_1_combine_tensor)
+
+    def test_zero_score_fn_produces_finite_combine_tensor(self):
+        cfg = TopKGating.default_config().set(
+            name="test",
+            score_fn=config_for_function(zero_score_fn),
+            num_experts=4,
+            num_experts_per_token=2,
+        )
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        logits = jnp.zeros((1, 2, 8, 4), dtype=jnp.float32)
+
+        output, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        self.assertTrue(bool(jnp.isfinite(output.combine_tensor).all()))
+        self.assertTrue(bool(jnp.isfinite(output.dispatch_tensor).all()))
+        self.assertTrue(bool(jnp.isfinite(output.load_balance_loss)))
+        self.assertNestedAllClose(output.combine_tensor, jnp.zeros_like(output.combine_tensor))
+
+
+class TopKDropFreeGatingTest(TestCase):
+    def test_zero_score_fn_produces_finite_expert_weights(self):
+        cfg = TopKDropFreeGating.default_config().set(
+            name="test",
+            score_fn=config_for_function(zero_score_fn),
+            num_experts=4,
+            num_experts_per_token=2,
+        )
+        layer: TopKDropFreeGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        logits = jnp.zeros((2, 8, 4), dtype=jnp.float32)
+
+        output, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits, seq_load_balance_loss_weight=None),
+        )
+
+        self.assertTrue(bool(jnp.isfinite(output.expert_weights).all()))
+        self.assertTrue(bool(jnp.isfinite(output.load_balance_loss)))
+        self.assertNestedAllClose(output.expert_weights, jnp.zeros_like(output.expert_weights))
+
+
+class TopKBiasGatingTest(TestCase):
+    @parameterized.parameters(False, True)
+    def test_zero_score_fn_produces_finite_expert_weights(self, use_group_routing: bool):
+        cfg = TopKBiasGating.default_config().set(
+            name="test",
+            score_fn=config_for_function(zero_score_fn),
+            num_experts=4,
+            num_experts_per_token=2,
+            routed_scaling_factor=1,
+        )
+        if use_group_routing:
+            cfg.num_group_of_experts = 2
+            cfg.topk_group = 1
+
+        layer: TopKBiasGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        logits = jnp.zeros((2, 8, 4), dtype=jnp.float32)
+
+        output, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits, seq_load_balance_loss_weight=None),
+        )
+
+        self.assertTrue(bool(jnp.isfinite(output.expert_weights).all()))
+        self.assertTrue(bool(jnp.isfinite(output.load_balance_loss)))
+        self.assertNestedAllClose(output.expert_weights, jnp.zeros_like(output.expert_weights))
 
 
 class TransformerFeedForwardDropFreeMoETest(TestCase):
