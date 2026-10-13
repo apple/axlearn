@@ -2,6 +2,9 @@
 
 [![build-and-test](https://github.com/apple/axlearn/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/apple/axlearn/actions/workflows/build.yml)
 
+<p>
+  <b>English</b> · <a href="README.zh.md">简体中文</a>
+</p>
 
 **This library is under active development and the API is subject to change.**
 
